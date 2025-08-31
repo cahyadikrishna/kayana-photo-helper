@@ -1,9 +1,11 @@
-import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage } from 'electron'
 import { join } from 'path'
 import { promises as fs } from 'fs'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import icon from '../../resources/icon.png?asset'
+// Use a raster icon (PNG) placed in project's resources so main process can load it in dev and production
+const iconPath = join(__dirname, '../../resources/icon.png')
+const appIcon = nativeImage.createFromPath(iconPath)
 
 function createWindow(): void {
   // Create the browser window.
@@ -12,7 +14,8 @@ function createWindow(): void {
     height: 800,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    // Provide an icon for Windows/Linux. On macOS the app bundle/dock icon is used instead.
+    ...(process.platform === 'darwin' ? {} : { icon: appIcon }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false
@@ -50,6 +53,15 @@ app.whenReady().then(() => {
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
+
+  // Set dock icon on macOS (works in dev and packaged app)
+  if (process.platform === 'darwin') {
+    try {
+      app.dock?.setIcon(appIcon)
+    } catch {
+      // ignore in environments where dock is unavailable
+    }
+  }
 
   // IPC test
   ipcMain.on('ping', () => console.log('Hello from main process!'))

@@ -5,6 +5,14 @@ import { RadioGroup, RadioGroupItem } from './components/ui/radio-group'
 import { Textarea } from './components/ui/textarea'
 import { ScrollArea } from './components/ui/scroll-area'
 import { Separator } from './components/ui/separator'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter
+} from './components/ui/dialog'
 
 function App(): React.JSX.Element {
   const [fileNames, setFileNames] = useState('')
@@ -20,6 +28,7 @@ function App(): React.JSX.Element {
     failed: { input: string; matched: string; error: string }[]
     notFound: string[]
   } | null>(null)
+  const [showResultDialog, setShowResultDialog] = useState(false)
 
   // Parse numbers from input text
   const parseNumbersFromInput = (input: string): string[] => {
@@ -237,12 +246,29 @@ function App(): React.JSX.Element {
     try {
       const copyResults = await window.api.copyFiles(sourceFolder, finalDestFolder, numbers)
       setResults(copyResults)
+      setShowResultDialog(true)
     } catch (error) {
       console.error('Error copying files:', error)
       alert('An error occurred while copying files')
     } finally {
       setIsProcessing(false)
     }
+  }
+
+  const resetAppState = (): void => {
+    setFileNames('')
+    setSourceFolder('')
+    setDestFolder('')
+    setDestMode('create')
+    setCustomFolderName('')
+    setPreviewNumbers([])
+    setMatchedFiles([])
+    setResults(null)
+  }
+
+  const onDialogDone = (): void => {
+    setShowResultDialog(false)
+    resetAppState()
   }
 
   return (
@@ -445,6 +471,62 @@ function App(): React.JSX.Element {
           )}
         </div>
       </div>
+
+      <Dialog
+        open={showResultDialog}
+        onOpenChange={(open) => {
+          // only allow opening via state; ignore attempts to close (open === false)
+          if (open) setShowResultDialog(true)
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>Copy complete</DialogTitle>
+            <DialogDescription>
+              Successfully copied {results?.success.length ?? 0} files.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div>
+            {results && results.success.length > 0 && (
+              <div className="mb-2">
+                <h5 className="font-semibold">Files copied:</h5>
+                <ul className="list-disc list-inside text-sm mt-1 max-h-40 overflow-auto">
+                  {results.success.map((r, i) => (
+                    <li key={i}>{r.matched}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            {results && results.notFound.length > 0 && (
+              <div className="mb-2">
+                <h5 className="font-semibold">Not found:</h5>
+                <div className="text-sm mt-1">{results.notFound.join(', ')}</div>
+              </div>
+            )}
+
+            {results && results.failed.length > 0 && (
+              <div className="mb-2">
+                <h5 className="font-semibold">Failed:</h5>
+                <ul className="text-sm mt-1">
+                  {results.failed.map((f, i) => (
+                    <li key={i}>
+                      {f.input} → {f.matched} ({f.error})
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="default" size="lg" onClick={onDialogDone}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

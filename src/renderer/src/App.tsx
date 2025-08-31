@@ -1,5 +1,10 @@
 import { useState, useEffect } from 'react'
-import './App.css'
+import { Button } from './components/ui/button'
+import { Input } from './components/ui/input'
+import { RadioGroup, RadioGroupItem } from './components/ui/radio-group'
+import { Textarea } from './components/ui/textarea'
+import { ScrollArea } from './components/ui/scroll-area'
+import { Separator } from './components/ui/separator'
 
 function App(): React.JSX.Element {
   const [fileNames, setFileNames] = useState('')
@@ -211,7 +216,7 @@ function App(): React.JSX.Element {
       }
       try {
         finalDestFolder = await window.api.createDestFolder(customFolderName.trim())
-      } catch (error) {
+      } catch {
         alert('Failed to create destination folder')
         return
       }
@@ -241,94 +246,107 @@ function App(): React.JSX.Element {
   }
 
   return (
-    <div className="app-container">
-      <header className="app-header">
-        <h1>📸 Photo Helper</h1>
+    <div className="p-6">
+      <header className="flex flex-col items-center gap-1">
+        <h1 className="font-bold text-2xl">📸 Kayana Photo Helper</h1>
         <p>Filter and copy photos by number - supports various input formats</p>
-        <small>🎯 Smart filtering: Prioritizes RAW files when both RAW and JPG exist</small>
+        <small className="text-green-500">
+          🎯 Smart filtering: Prioritizes RAW files when both RAW and JPG exist
+        </small>
       </header>
 
-      <div className="main-content">
-        <div className="input-section">
-          <div className="folder-section">
-            <div className="form-group">
+      <div className="flex flex-fow gap-4 w-full mt-6">
+        <div className="w-full">
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-col">
               <label>Source Folder:</label>
-              <div className="folder-input">
-                <input
+
+              <div className="flex gap-2">
+                <Input
                   type="text"
                   value={sourceFolder}
                   readOnly
                   placeholder="Select folder with original photos"
                 />
-                <button onClick={() => handleSelectFolder('source')}>Browse</button>
+
+                <Button variant="default" size="lg" onClick={() => handleSelectFolder('source')}>
+                  Browse
+                </Button>
               </div>
             </div>
 
             <div className="form-group">
               <label>Destination Folder:</label>
-              <div className="dest-mode-selector">
+              <RadioGroup
+                value={destMode}
+                onValueChange={(val) => setDestMode(val as 'create' | 'select')}
+                className="dest-mode-selector flex flex-row"
+              >
                 <label className="radio-option">
-                  <input
-                    type="radio"
-                    value="create"
-                    checked={destMode === 'create'}
-                    onChange={(e) => setDestMode(e.target.value as 'create' | 'select')}
-                  />
+                  <RadioGroupItem value="create" />
                   <span>Create in Downloads</span>
                 </label>
+
                 <label className="radio-option">
-                  <input
-                    type="radio"
-                    value="select"
-                    checked={destMode === 'select'}
-                    onChange={(e) => setDestMode(e.target.value as 'create' | 'select')}
-                  />
+                  <RadioGroupItem value="select" />
                   <span>Select existing folder</span>
                 </label>
-              </div>
+              </RadioGroup>
 
               {destMode === 'create' ? (
                 <div className="folder-input">
-                  <input
+                  <Input
                     type="text"
                     value={customFolderName}
                     onChange={(e) => setCustomFolderName(e.target.value)}
                     placeholder="Enter folder name (e.g., 'Client Wedding Photos')"
                   />
+
                   <span className="folder-hint">
                     📁 ~/Downloads/{customFolderName || 'folder-name'}
                   </span>
                 </div>
               ) : (
-                <div className="folder-input">
-                  <input
+                <div className="flex flex-row gap-2">
+                  <Input
                     type="text"
                     value={destFolder}
                     readOnly
                     placeholder="Select folder to copy selected photos"
                   />
-                  <button onClick={() => handleSelectFolder('destination')}>Browse</button>
+
+                  <Button
+                    variant="default"
+                    size="lg"
+                    onClick={() => handleSelectFolder('destination')}
+                  >
+                    Browse
+                  </Button>
                 </div>
               )}
             </div>
           </div>
 
-          <div className="main-input">
+          <div className="mt-4">
             <div className="form-group">
               <label htmlFor="fileNames">Photo Numbers or Names:</label>
 
-              <textarea
+              <Textarea
                 id="fileNames"
                 value={fileNames}
                 onChange={(e) => setFileNames(e.target.value)}
-                placeholder="Paste your list here - supports various formats:&#10;3185&#10;3190&#10;• 3555&#10;1. 5504&#10;IMG_1234.JPG"
-                rows={8}
+                placeholder={
+                  'Paste your list here - supports various formats:\n3185\n3190\n• 3555\n1. 5504\nIMG_1234.JPG'
+                }
+                rows={10}
               />
             </div>
           </div>
 
-          <button
-            className="copy-button"
+          <Button
+            className="w-full mt-4"
+            variant="default"
+            size="lg"
             onClick={handleCopyFiles}
             disabled={
               isProcessing ||
@@ -338,25 +356,25 @@ function App(): React.JSX.Element {
             }
           >
             {isProcessing ? 'Copying...' : `Copy ${matchedFiles.length} Selected Photos`}
-          </button>
+          </Button>
         </div>
 
-        <div className="output-section">
+        <div className="w-full">
           {sourceFolder && previewNumbers.length > 0 && (
             <div className="preview-section">
               {matchedFiles.length > 0 ? (
                 <>
                   <h4>🔍 Found {matchedFiles.length} matching files:</h4>
-                  <div className="matched-files-preview">
-                    {matchedFiles.slice(0, 10).map((file) => (
-                      <span key={file} className="file-tag">
-                        {file}
-                      </span>
-                    ))}
-                    {matchedFiles.length > 10 && (
-                      <span className="more-files">+{matchedFiles.length - 10} more...</span>
-                    )}
-                  </div>
+                  <ScrollArea className="h-64 w-full rounded-md border">
+                    <div className="p-4">
+                      {matchedFiles.map((file, index) => (
+                        <div key={file}>
+                          <div className="text-sm">{file}</div>
+                          {index < matchedFiles.length - 1 && <Separator className="my-2" />}
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
                 </>
               ) : (
                 <div>
@@ -369,46 +387,60 @@ function App(): React.JSX.Element {
           )}
 
           {results && (
-            <div className="results-section">
-              <h3>Copy Results</h3>
-              {results.success.length > 0 && (
-                <div className="result-group success">
-                  <h4>✅ Successfully copied ({results.success.length}):</h4>
-                  <ul>
-                    {results.success.map((result, index) => (
-                      <li key={index}>
-                        <strong>{result.input}</strong> → {result.matched}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+            <div className="results-section mt-4">
+              <h4 className="mb-2">📋 Copy Results</h4>
+              <ScrollArea className="h-72 w-full rounded-md border">
+                <div className="p-4">
+                  {results.success.length > 0 && (
+                    <>
+                      <h5 className="text-sm font-semibold text-green-600 mb-2">
+                        ✅ Successfully copied ({results.success.length}):
+                      </h5>
+                      {results.success.map((result, index) => (
+                        <div key={`success-${index}`}>
+                          <div className="text-sm">
+                            <strong>{result.input}</strong> → {result.matched}
+                          </div>
+                          {index < results.success.length - 1 && <Separator className="my-2" />}
+                        </div>
+                      ))}
+                      <Separator className="my-4" />
+                    </>
+                  )}
 
-              {results.notFound.length > 0 && (
-                <div className="result-group not-found">
-                  <h4>❌ Numbers not found ({results.notFound.length}):</h4>
-                  <ul>
-                    {results.notFound.map((number, index) => (
-                      <li key={index}>{number}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+                  {results.notFound.length > 0 && (
+                    <>
+                      <h5 className="text-sm font-semibold text-yellow-600 mb-2">
+                        🤔 Numbers not found ({results.notFound.length}):
+                      </h5>
+                      {results.notFound.map((number, index) => (
+                        <div key={`not-found-${index}`}>
+                          <div className="text-sm">{number}</div>
+                          {index < results.notFound.length - 1 && <Separator className="my-2" />}
+                        </div>
+                      ))}
+                      <Separator className="my-4" />
+                    </>
+                  )}
 
-              {results.failed.length > 0 && (
-                <div className="result-group failed">
-                  <h4>⚠️ Failed to copy ({results.failed.length}):</h4>
-
-                  <ul>
-                    {results.failed.map((result, index) => (
-                      <li key={index}>
-                        <strong>{result.input}</strong> → {result.matched}
-                        <small> (Error: {result.error})</small>
-                      </li>
-                    ))}
-                  </ul>
+                  {results.failed.length > 0 && (
+                    <>
+                      <h5 className="text-sm font-semibold text-red-600 mb-2">
+                        ⚠️ Failed to copy ({results.failed.length}):
+                      </h5>
+                      {results.failed.map((result, index) => (
+                        <div key={`failed-${index}`}>
+                          <div className="text-sm">
+                            <strong>{result.input}</strong> → {result.matched}
+                            <span className="text-xs text-red-500"> (Error: {result.error})</span>
+                          </div>
+                          {index < results.failed.length - 1 && <Separator className="my-2" />}
+                        </div>
+                      ))}
+                    </>
+                  )}
                 </div>
-              )}
+              </ScrollArea>
             </div>
           )}
         </div>

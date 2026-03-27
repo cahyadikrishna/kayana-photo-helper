@@ -10,8 +10,8 @@ const appIcon = nativeImage.createFromPath(iconPath)
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 1000,
-    height: 800,
+    width: 1280,
+    height: 860,
     show: false,
     autoHideMenuBar: true,
     // Provide an icon for Windows/Linux. On macOS the app bundle/dock icon is used instead.

@@ -504,13 +504,6 @@ function App(): React.JSX.Element {
       case 'review':
         return (
           <div className="bg-[#18181B] rounded-[24px] p-6 m-4 border border-white/5 flex flex-col gap-6">
-            <div className="flex flex-col mb-2 px-2">
-              <h1 className="text-2xl font-bold tracking-tighter text-[#FAFAFA] font-headline">
-                Kayana
-              </h1>
-              <p className="text-sm font-medium text-[#71717A]">Photo Helper</p>
-            </div>
-
             <div className="space-y-4">
               <div className="space-y-2 opacity-60">
                 <label className="text-[0.75rem] font-bold uppercase tracking-widest text-[#71717A] font-headline">
@@ -592,16 +585,6 @@ function App(): React.JSX.Element {
                 <span className="text-[#4338CA] font-medium">sidebar</span> to begin indexing your
                 media.
               </p>
-              <div className="flex gap-3">
-                <div className="px-5 py-2.5 bg-gray-50 text-gray-500 rounded-full border border-gray-100 text-xs font-bold font-headline flex items-center gap-2 hover:bg-gray-100 transition-colors cursor-pointer">
-                  <span className="material-symbols-outlined text-sm">history</span>
-                  Recent Projects
-                </div>
-                <div className="px-5 py-2.5 bg-gray-50 text-gray-500 rounded-full border border-gray-100 text-xs font-bold font-headline flex items-center gap-2 hover:bg-gray-100 transition-colors cursor-pointer">
-                  <span className="material-symbols-outlined text-sm">lightbulb</span>
-                  Quick Start Guide
-                </div>
-              </div>
             </div>
           </div>
         )
@@ -1002,9 +985,6 @@ function App(): React.JSX.Element {
         {/* Top Navigation Bar */}
         <header className="h-16 w-full flex items-center justify-between px-8 border-b border-gray-100 bg-white/80 backdrop-blur-xl z-10">
           <div className="flex items-center gap-6">
-            <span className="text-[#09090B] font-headline font-extrabold tracking-tighter text-xl">
-              KPH
-            </span>
             <nav className="flex gap-6">
               {STEPS.map((step) => (
                 <span
@@ -1022,20 +1002,6 @@ function App(): React.JSX.Element {
                 </span>
               ))}
             </nav>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="relative flex items-center bg-[#F4F4F5] rounded-full px-4 py-1.5">
-              <span className="material-symbols-outlined text-sm text-[#71717A] mr-2">search</span>
-              <input
-                className="bg-transparent border-none text-xs focus:ring-0 focus:outline-none text-[#09090B] w-32 placeholder:text-[#A1A1AA]"
-                placeholder="Search files..."
-                type="text"
-                readOnly
-              />
-            </div>
-            <button className="p-2 text-gray-400 hover:text-gray-900 transition-colors">
-              <span className="material-symbols-outlined">help</span>
-            </button>
           </div>
         </header>
 

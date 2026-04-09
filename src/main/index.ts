@@ -3,6 +3,10 @@ import { join } from 'path'
 import { promises as fs } from 'fs'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+
+// Must be set at module level (before app.whenReady) for macOS dock tooltip to work
+app.setName('Kayana Photo Helper')
+
 // Use a raster icon (PNG) placed in project's resources so main process can load it in dev and production
 const iconPath = join(__dirname, '../../resources/icon.png')
 const appIcon = nativeImage.createFromPath(iconPath)
@@ -45,7 +49,7 @@ function createWindow(): void {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.kayana.photo-helper')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

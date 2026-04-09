@@ -1,5 +1,5 @@
-appId: com.electron.app
-productName: photo-helper
+appId: com.kayana.photo-helper
+productName: Kayana Photo Helper
 directories:
   buildResources: build
 files:

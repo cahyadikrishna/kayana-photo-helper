@@ -274,7 +274,7 @@ function App(): React.JSX.Element {
   return (
     <div className="p-6">
       <header className="flex flex-col items-center gap-1">
-        <h1 className="font-bold text-2xl">📸 Kayana Photo Helper</h1>
+        <h1 className="font-bold text-2xl">📸 KAYANA PHOTO HELPER</h1>
         <p>Filter and copy photos by number - supports various input formats</p>
         <small className="text-green-500">
           🎯 Smart filtering: Prioritizes RAW files when both RAW and JPG exist

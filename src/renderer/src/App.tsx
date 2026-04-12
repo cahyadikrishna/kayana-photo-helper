@@ -27,42 +27,56 @@ function App(): React.JSX.Element {
   const [matchedFiles, setMatchedFiles] = useState<string[]>([])
   const [results, setResults] = useState<CopyResults | null>(null)
   const [destPathError, setDestPathError] = useState('')
+  const [duplicateInputs, setDuplicateInputs] = useState<Map<string, number>>(new Map())
+  const [showReviewDuplicateModal, setShowReviewDuplicateModal] = useState(false)
 
-  // Parse numbers from input text
-  const parseNumbersFromInput = (input: string): string[] => {
+  // Parse photo file identifiers from input text.
+  // Returns deduplicated identifiers and a map of duplicates (identifier → count).
+  // Handles: KYN3185, KYN-3185, KYN_3185, DSC_0012, plain numbers like 3185, etc.
+  const parsePhotoFilesFromInput = (input: string): { identifiers: string[]; duplicates: Map<string, number> } => {
     const lines = input.split('\n')
-    const numbers: string[] = []
+    const counts = new Map<string, number>()
 
     for (const line of lines) {
-      const trimmedLine = line.trim()
-      if (!trimmedLine) continue
-
-      let cleanLine = trimmedLine
+      let cleanLine = line.trim()
+      if (!cleanLine) continue
+      // Remove numbered list prefixes (1. 2. etc.)
       cleanLine = cleanLine.replace(/^\d+\.\s*/, '')
+      // Remove bullet point prefixes (•, -, *)
       cleanLine = cleanLine.replace(/^[•\-*]\s*/, '')
       cleanLine = cleanLine.trim()
+      if (!cleanLine) continue
 
-      if (cleanLine) {
-        const photoNumbers = cleanLine.match(/\d{3,}/g)
-        if (photoNumbers) {
-          numbers.push(...photoNumbers)
-        } else {
-          const anyNumbers = cleanLine.match(/\d+/g)
-          if (anyNumbers) {
-            const filteredNumbers = anyNumbers.filter((num) => parseInt(num, 10) >= 100)
-            numbers.push(...filteredNumbers)
-          }
+      // Match: optional letter prefix (2-6 chars) + optional separator + digits (3+)
+      // or just digits (3+) alone
+      const matches = cleanLine.match(/[A-Za-z]{2,6}[\-_]?\d{3,}|\d{3,}/g)
+      if (matches) {
+        for (const m of matches) {
+          // Normalize: uppercase, strip separator between letter prefix and digits
+          const key = m.toUpperCase().replace(/([A-Z]{2,6})[\-_](\d)/g, '$1$2')
+          counts.set(key, (counts.get(key) || 0) + 1)
         }
+      } else {
+        // Fallback: whole line as identifier
+        const key = cleanLine.toUpperCase()
+        counts.set(key, (counts.get(key) || 0) + 1)
       }
     }
 
-    return [...new Set(numbers)]
+    const identifiers: string[] = []
+    const duplicates = new Map<string, number>()
+    for (const [key, count] of counts) {
+      identifiers.push(key)
+      if (count > 1) duplicates.set(key, count)
+    }
+    return { identifiers, duplicates }
   }
 
-  // Update preview when input changes
+  // Update preview and duplicate tracking when input changes
   useEffect(() => {
-    const numbers = parseNumbersFromInput(fileNames)
-    setPreviewNumbers(numbers)
+    const { identifiers, duplicates } = parsePhotoFilesFromInput(fileNames)
+    setPreviewNumbers(identifiers)
+    setDuplicateInputs(duplicates)
   }, [fileNames])
 
   // Update matched files when source folder or preview numbers change
@@ -116,20 +130,28 @@ function App(): React.JSX.Element {
             return prioritizedFiles
           }
 
+          const normalize = (s: string): string => s.toUpperCase().replace(/[\-_]/g, '')
+
           const matched: string[] = []
-          for (const number of previewNumbers) {
+          for (const identifier of previewNumbers) {
+            const isPureNumber = /^\d+$/.test(identifier)
+
             const matchingFiles = sourceFiles.filter((file) => {
-              const fileNumbers = file.match(/\d+/g) || []
-              return fileNumbers.some((fileNum) => {
-                const inputNum = parseInt(number, 10)
-                const fileNumInt = parseInt(fileNum, 10)
-                return (
-                  fileNumInt === inputNum || fileNum.includes(number) || number.includes(fileNum)
-                )
-              })
+              if (isPureNumber) {
+                const inputNum = parseInt(identifier, 10)
+                const fileNums = file.match(/\d+/g) || []
+                return fileNums.some((fn) => parseInt(fn, 10) === inputNum)
+              } else {
+                const normIdent = normalize(identifier)
+                const fileBase = normalize(file.substring(0, file.lastIndexOf('.')))
+                return fileBase.includes(normIdent)
+              }
             })
-            const prioritizedFiles = prioritizeRawFiles(matchingFiles)
-            matched.push(...prioritizedFiles)
+
+            const prioritized = prioritizeRawFiles(matchingFiles)
+            // Preview shows RAW files only per identifier; fall back to non-RAW if no RAW found
+            const rawOnly = prioritized.filter(isRawFile)
+            matched.push(...(rawOnly.length > 0 ? rawOnly : prioritized))
           }
 
           setMatchedFiles([...new Set(matched)])
@@ -184,11 +206,12 @@ function App(): React.JSX.Element {
     setIsProcessing(true)
     setResults(null)
 
-    const numbers = parseNumbersFromInput(fileNames)
+    const { identifiers } = parsePhotoFilesFromInput(fileNames)
 
     try {
-      const copyResults = await window.api.copyFiles(sourceFolder, finalDestFolder, numbers)
+      const copyResults = await window.api.copyFiles(sourceFolder, finalDestFolder, identifiers)
       setResults(copyResults)
+      if (duplicateInputs.size > 0) setShowReviewDuplicateModal(true)
       setCurrentStep('review')
     } catch (error) {
       console.error('Error copying files:', error)
@@ -207,6 +230,8 @@ function App(): React.JSX.Element {
     setMatchedFiles([])
     setResults(null)
     setDestPathError('')
+    setDuplicateInputs(new Map())
+    setShowReviewDuplicateModal(false)
     setCurrentStep('source')
   }
 
@@ -483,7 +508,7 @@ function App(): React.JSX.Element {
               />
               <div className="mt-2.5 flex items-center justify-between">
                 <span className="text-xs text-[#A1A1AA]">
-                  {previewNumbers.length} numbers identified
+                  {previewNumbers.length} identifiers found
                 </span>
                 {fileNames && (
                   <button
@@ -494,6 +519,17 @@ function App(): React.JSX.Element {
                   </button>
                 )}
               </div>
+              {duplicateInputs.size > 0 && (
+                <div className="mt-2 p-2.5 bg-[#F59E0B]/10 border border-[#F59E0B]/30 rounded-xl flex items-start gap-2">
+                  <span className="material-symbols-outlined text-[#F59E0B] text-sm shrink-0" style={{ fontVariationSettings: "'FILL' 1" }}>warning</span>
+                  <div>
+                    <p className="text-[10px] font-bold text-[#F59E0B] uppercase tracking-widest font-headline">Duplicates Detected</p>
+                    <p className="text-[11px] text-[#A1A1AA] mt-0.5 leading-relaxed">
+                      {Array.from(duplicateInputs.entries()).map(([k, v]) => `${k} (${v}×)`).join(', ')}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="fixed bottom-0 left-0 w-[35%] p-4 bg-gradient-to-t from-[#09090B] via-[#09090B] to-transparent z-10">
@@ -770,7 +806,39 @@ function App(): React.JSX.Element {
 
       case 'review':
         return (
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden relative">
+            {/* Duplicate inputs modal */}
+            {showReviewDuplicateModal && duplicateInputs.size > 0 && (
+              <div className="absolute inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-8">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+                  <div className="bg-[#F59E0B] px-6 py-4 flex items-center gap-3">
+                    <span className="material-symbols-outlined text-white" style={{ fontVariationSettings: "'FILL' 1" }}>warning</span>
+                    <h3 className="font-headline font-bold text-white text-base">Duplicate Inputs Detected</h3>
+                  </div>
+                  <div className="px-6 py-4">
+                    <p className="text-sm text-[#71717A] mb-4">The following identifiers appeared more than once in your input. Only one copy was processed per identifier.</p>
+                    <div className="divide-y divide-gray-100 border border-gray-100 rounded-xl overflow-hidden">
+                      {Array.from(duplicateInputs.entries()).map(([key, count]) => (
+                        <div key={key} className="px-4 h-11 flex items-center justify-between">
+                          <span className="font-headline font-bold text-[#09090B] text-sm">{key}</span>
+                          <span className="px-2.5 py-1 bg-[#F59E0B]/10 text-[#F59E0B] rounded-lg text-xs font-bold font-headline">
+                            {count}× duplicate
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="px-6 pb-5">
+                    <button
+                      onClick={() => setShowReviewDuplicateModal(false)}
+                      className="w-full py-2.5 bg-[#09090B] text-white font-headline font-bold rounded-xl text-sm hover:bg-[#27272A] transition-colors"
+                    >
+                      Got it
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
             {results && results.success.length > 0 && (
               <div className="bg-[#10B981] px-8 py-4 flex items-center justify-between shadow-lg relative z-20">
                 <div className="flex items-center gap-3">

@@ -206,28 +206,26 @@ app.whenReady().then(() => {
         return prioritizedFiles
       }
 
+      // Normalize identifier: strip separators between letter prefix and digits
+      const normalizeId = (s: string): string => s.toUpperCase().replace(/[\-_]/g, '')
+
+      const matchFileToIdentifier = (file: string, identifier: string): boolean => {
+        if (/^\d+$/.test(identifier)) {
+          // Pure number: match by integer value
+          const inputNum = parseInt(identifier, 10)
+          const fileNums = file.match(/\d+/g) || []
+          return fileNums.some((fn) => parseInt(fn, 10) === inputNum)
+        } else {
+          // Full identifier (e.g. KYN3185): normalize and check containment
+          const normIdent = normalizeId(identifier)
+          const fileBase = normalizeId(file.substring(0, file.lastIndexOf('.')))
+          return fileBase.includes(normIdent)
+        }
+      }
+
       for (const inputNumber of inputNumbers) {
         try {
-          // Find matching files that contain this number
-          const matchingFiles = imageFiles.filter((file) => {
-            // Extract numbers from filename
-            const fileNumbers = file.match(/\d+/g) || []
-            return fileNumbers.some((fileNum) => {
-              // Convert both to integers for comparison to ignore leading zeros
-              const inputNum = parseInt(inputNumber, 10)
-              const fileNumInt = parseInt(fileNum, 10)
-
-              // Check multiple matching strategies:
-              // 1. Exact integer match (ignores leading zeros)
-              // 2. String contains (for partial matches)
-              // 3. Bidirectional contains (handles various cases)
-              return (
-                fileNumInt === inputNum ||
-                fileNum.includes(inputNumber) ||
-                inputNumber.includes(fileNum)
-              )
-            })
-          })
+          const matchingFiles = imageFiles.filter((file) => matchFileToIdentifier(file, inputNumber))
 
           if (matchingFiles.length === 0) {
             results.notFound.push(inputNumber)
@@ -247,18 +245,7 @@ app.whenReady().then(() => {
           }
         } catch (error) {
           console.error(`Failed to copy files for ${inputNumber}:`, error)
-          const matchingFiles = imageFiles.filter((file) => {
-            const fileNumbers = file.match(/\d+/g) || []
-            return fileNumbers.some((fileNum) => {
-              const inputNum = parseInt(inputNumber, 10)
-              const fileNumInt = parseInt(fileNum, 10)
-              return (
-                fileNumInt === inputNum ||
-                fileNum.includes(inputNumber) ||
-                inputNumber.includes(fileNum)
-              )
-            })
-          })
+          const matchingFiles = imageFiles.filter((file) => matchFileToIdentifier(file, inputNumber))
 
           if (matchingFiles.length > 0) {
             const prioritizedFiles = prioritizeRawFiles(matchingFiles)

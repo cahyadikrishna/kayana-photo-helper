@@ -9,7 +9,6 @@ import {
   Trash2,
   Sun,
   Moon,
-  Settings,
   AlertCircle,
   Check,
   Loader2
@@ -40,8 +39,6 @@ function App(): React.JSX.Element {
   const [elapsed, setElapsed] = useState(0)
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [showModal, setShowModal] = useState(false)
-  const [showTweaks, setShowTweaks] = useState(false)
-  const [density, setDensity] = useState(3)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const copyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -61,8 +58,7 @@ function App(): React.JSX.Element {
     document.documentElement.dataset.theme = next
   }
 
-  const densityScale: Record<number, number> = { 1: 1.35, 2: 1.18, 3: 1.05, 4: 0.95, 5: 0.85 }
-  const scale = densityScale[density] || 1
+  const scale = 1.35
 
   // Parser (kept exactly as before)
   const parsePhotoFilesFromInput = useCallback(
@@ -333,27 +329,23 @@ function App(): React.JSX.Element {
 
   return (
     <div
-      className="w-[900px] h-[640px] rounded-xl overflow-hidden flex flex-col relative"
+      className="w-full h-full overflow-hidden flex flex-col relative"
       style={{
         background: 'var(--color-bg)',
-        color: 'var(--color-text)',
-        boxShadow: '0 60px 120px -40px rgba(0,0,0,0.7), 0 10px 30px -10px rgba(0,0,0,0.5)'
+        color: 'var(--color-text)'
       }}
     >
-      {/* Titlebar */}
+      {/* Titlebar — draggable, leaves space for native traffic lights on macOS */}
       <div
-        className="h-8 grid items-center select-none shrink-0"
+        ref={(el) => {
+          if (el) el.style.setProperty('-webkit-app-region', 'drag')
+        }}
+        className="h-8 flex items-center justify-center select-none shrink-0 relative"
         style={{
           background: 'var(--color-surface-2)',
-          borderBottom: '1px solid var(--color-border)',
-          gridTemplateColumns: '70px 1fr 70px'
+          borderBottom: '1px solid var(--color-border)'
         }}
       >
-        <div className="flex gap-1.5 pl-2.5">
-          <span className="w-[11px] h-[11px] rounded-full" style={{ background: '#ff5f57' }} />
-          <span className="w-[11px] h-[11px] rounded-full" style={{ background: '#febc2e' }} />
-          <span className="w-[11px] h-[11px] rounded-full" style={{ background: '#28c840' }} />
-        </div>
         <div
           className="flex items-center justify-center gap-1.5 text-[11px]"
           style={{ color: 'var(--color-text-muted)', fontWeight: 500 }}
@@ -361,7 +353,6 @@ function App(): React.JSX.Element {
           <span className="w-1 h-1 rounded-full" style={{ background: 'var(--color-accent)' }} />
           Kayana Photo Helper
         </div>
-        <div />
       </div>
 
       {/* Form Body */}
@@ -828,7 +819,7 @@ function App(): React.JSX.Element {
             {/* Chips */}
             {previewNumbers.length > 0 && (
               <div className="flex flex-wrap gap-1.5 items-center" style={{ minHeight: '22px' }}>
-                {previewNumbers.slice(0, 10).map((num) => (
+                {previewNumbers.map((num) => (
                   <span
                     key={num}
                     className="inline-flex items-center gap-1.5 rounded-full font-mono text-[10.5px]"
@@ -842,14 +833,6 @@ function App(): React.JSX.Element {
                     {num}
                   </span>
                 ))}
-                {previewNumbers.length > 10 && (
-                  <span
-                    className="font-mono text-[10.5px]"
-                    style={{ color: 'var(--color-text-soft)' }}
-                  >
-                    +{previewNumbers.length - 10} more
-                  </span>
-                )}
               </div>
             )}
           </div>
@@ -944,28 +927,6 @@ function App(): React.JSX.Element {
             aria-label="Toggle theme"
           >
             {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
-          </button>
-          <button
-            onClick={() => setShowTweaks(!showTweaks)}
-            className="w-[26px] h-[26px] grid place-items-center rounded-md cursor-pointer transition-all duration-[120ms]"
-            style={{
-              background: 'transparent',
-              border: '1px solid transparent',
-              color: 'var(--color-text-muted)'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--color-text)'
-              e.currentTarget.style.background = 'var(--color-surface)'
-              e.currentTarget.style.borderColor = 'var(--color-border)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--color-text-muted)'
-              e.currentTarget.style.background = 'transparent'
-              e.currentTarget.style.borderColor = 'transparent'
-            }}
-            aria-label="Tweaks"
-          >
-            <Settings size={13} />
           </button>
           <span className="font-mono text-[10.5px]" style={{ color: 'var(--color-text-soft)' }}>
             v2.5.0
@@ -1136,62 +1097,6 @@ function App(): React.JSX.Element {
               >
                 Finish
               </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Tweaks panel */}
-      {showTweaks && (
-        <div
-          className="fixed z-[100]"
-          style={{
-            bottom: '18px',
-            right: '18px',
-            background: 'var(--color-surface)',
-            border: '1px solid var(--color-border-strong)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '12px',
-            color: 'var(--color-text)',
-            fontSize: '11.5px',
-            boxShadow:
-              'var(--shadow-lg, 0 20px 40px -20px rgba(0,0,0,0.7), 0 2px 4px rgba(0,0,0,0.3))',
-            minWidth: '220px'
-          }}
-        >
-          <div className="flex justify-between items-center mb-2.5">
-            <span className="text-[12.5px] font-semibold">Tweaks</span>
-            <button
-              onClick={() => setShowTweaks(false)}
-              className="w-5 h-5 rounded grid place-items-center cursor-pointer"
-              style={{ background: 'transparent', border: 0, color: 'var(--color-text-muted)' }}
-            >
-              <X size={12} />
-            </button>
-          </div>
-          <div className="mb-2">
-            <label
-              className="block text-[10.5px] font-mono tracking-[0.05em] uppercase mb-1"
-              style={{ color: 'var(--color-text-muted)' }}
-            >
-              Density
-            </label>
-            <input
-              type="range"
-              min={1}
-              max={5}
-              step={1}
-              value={density}
-              onChange={(e) => setDensity(parseInt(e.target.value, 10))}
-              className="w-full"
-              style={{ accentColor: 'var(--color-accent)' }}
-            />
-            <div
-              className="flex justify-between font-mono text-[10px] mt-0.5"
-              style={{ color: 'var(--color-text-soft)' }}
-            >
-              <span>roomy</span>
-              <span>dense</span>
             </div>
           </div>
         </div>

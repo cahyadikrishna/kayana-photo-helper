@@ -31,6 +31,7 @@ function App(): React.JSX.Element {
   const [isProcessing, setIsProcessing] = useState(false)
   const [previewNumbers, setPreviewNumbers] = useState<string[]>([])
   const [matchedFiles, setMatchedFiles] = useState<string[]>([])
+  const [matchResults, setMatchResults] = useState<{ identifier: string; matchedFiles: string[] }[]>([])
   const [results, setResults] = useState<CopyResults | null>(null)
   const [destPathError, setDestPathError] = useState('')
   const [duplicateInputs, setDuplicateInputs] = useState<Map<string, number>>(new Map())
@@ -166,32 +167,38 @@ function App(): React.JSX.Element {
           const normalize = (s: string): string => s.toUpperCase().replace(/[-_]/g, '')
 
           const matched: string[] = []
+          const results: { identifier: string; matchedFiles: string[] }[] = []
           for (const identifier of previewNumbers) {
             const isPureNumber = /^\d+$/.test(identifier)
 
             const matchingFiles = sourceFiles.filter((file) => {
               if (isPureNumber) {
                 const inputNum = parseInt(identifier, 10)
-                const fileNums = file.match(/\d+/g) || []
-                return fileNums.some((fn) => parseInt(fn, 10) === inputNum)
+                const baseName = file.substring(0, file.lastIndexOf('.'))
+                const trailingMatch = baseName.match(/(\d+)$/)
+                return trailingMatch ? parseInt(trailingMatch[1], 10) === inputNum : false
               } else {
                 const normIdent = normalize(identifier)
                 const fileBase = normalize(file.substring(0, file.lastIndexOf('.')))
-                return fileBase.includes(normIdent)
+                return fileBase === normIdent
               }
             })
 
             const prioritized = prioritizeRawFiles(matchingFiles)
             const rawOnly = prioritized.filter(isRawFile)
-            matched.push(...(rawOnly.length > 0 ? rawOnly : prioritized))
+            const finalFiles = rawOnly.length > 0 ? rawOnly : prioritized
+            matched.push(...finalFiles)
+            results.push({ identifier, matchedFiles: finalFiles })
           }
 
           setMatchedFiles([...new Set(matched)])
+          setMatchResults(results)
         } catch (error) {
           console.error('Error getting source files:', error)
         }
       } else {
         setMatchedFiles([])
+        setMatchResults([])
       }
     }
 
@@ -273,6 +280,7 @@ function App(): React.JSX.Element {
     setCustomFolderName('')
     setPreviewNumbers([])
     setMatchedFiles([])
+    setMatchResults([])
     setResults(null)
     setDestPathError('')
     setDuplicateInputs(new Map())

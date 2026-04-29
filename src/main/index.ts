@@ -214,15 +214,14 @@ app.whenReady().then(() => {
 
       const matchFileToIdentifier = (file: string, identifier: string): boolean => {
         if (/^\d+$/.test(identifier)) {
-          // Pure number: match by integer value
           const inputNum = parseInt(identifier, 10)
-          const fileNums = file.match(/\d+/g) || []
-          return fileNums.some((fn) => parseInt(fn, 10) === inputNum)
+          const baseName = file.substring(0, file.lastIndexOf('.'))
+          const trailingMatch = baseName.match(/(\d+)$/)
+          return trailingMatch ? parseInt(trailingMatch[1], 10) === inputNum : false
         } else {
-          // Full identifier (e.g. KYN3185): normalize and check containment
           const normIdent = normalizeId(identifier)
           const fileBase = normalizeId(file.substring(0, file.lastIndexOf('.')))
-          return fileBase.includes(normIdent)
+          return fileBase === normIdent
         }
       }
 

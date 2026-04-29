@@ -74,7 +74,7 @@ function App(): React.JSX.Element {
         cleanLine = cleanLine.trim()
         if (!cleanLine) continue
 
-        const matches = cleanLine.match(/[A-Za-z]{2,6}[-_]?\d{3,}|\d{3,}/g)
+        const matches = cleanLine.match(/[A-Za-z]{2,6}[-_]?\d+|\d+/g)
         if (matches) {
           for (const m of matches) {
             const key = m.toUpperCase().replace(/([A-Z]{2,6})[-_](\d)/g, '$1$2')

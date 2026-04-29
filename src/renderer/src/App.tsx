@@ -39,6 +39,7 @@ function App(): React.JSX.Element {
   const [progress, setProgress] = useState(0)
   const [elapsed, setElapsed] = useState(0)
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
+  const [showLogs, setShowLogs] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const copyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -288,6 +289,7 @@ function App(): React.JSX.Element {
     setProgress(0)
     setElapsed(0)
     setShowModal(false)
+    setShowLogs(false)
   }
 
   const restartJob = (): void => {
@@ -295,6 +297,7 @@ function App(): React.JSX.Element {
     setProgress(0)
     setElapsed(0)
     setShowModal(false)
+    setShowLogs(false)
   }
 
   // Derived state
@@ -1181,6 +1184,63 @@ function App(): React.JSX.Element {
                 </dd>
               </div>
             </div>
+            {/* Expandable logs */}
+            <div className="flex flex-col gap-0">
+              <button
+                onClick={() => setShowLogs((v) => !v)}
+                className="flex items-center gap-1.5 text-[11px] font-mono w-fit transition-opacity duration-[120ms]"
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  color: 'var(--color-text-soft)',
+                  fontFamily: 'var(--font-mono)'
+                }}
+              >
+                <span style={{ fontSize: '8px' }}>{showLogs ? '▼' : '▶'}</span>
+                {showLogs ? 'Hide logs' : 'Expand logs'}
+              </button>
+              {showLogs && (
+                <div
+                  className="flex flex-col overflow-y-auto font-mono text-[10.5px] leading-[1.6]"
+                  style={{
+                    marginTop: '6px',
+                    maxHeight: '140px',
+                    background: 'var(--color-surface-inset)',
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '8px 10px'
+                  }}
+                >
+                  {results.success.map((s, i) => (
+                    <span
+                      key={i}
+                      style={{ color: 'color-mix(in oklab, var(--color-success) 55%, var(--color-text-soft))' }}
+                    >
+                      {s.input}
+                    </span>
+                  ))}
+                  {results.notFound.map((id, i) => (
+                    <span
+                      key={`nf-${i}`}
+                      style={{ color: 'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))' }}
+                    >
+                      {id}
+                    </span>
+                  ))}
+                  {results.failed.map((f, i) => (
+                    <span
+                      key={`f-${i}`}
+                      style={{ color: 'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))' }}
+                    >
+                      {f.input}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="flex gap-2 justify-end mt-0.5">
               <button
                 onClick={restartJob}

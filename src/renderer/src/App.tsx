@@ -1039,7 +1039,7 @@ function App(): React.JSX.Element {
             {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
           </button>
           <span className="font-mono text-[10.5px]" style={{ color: 'var(--color-text-soft)' }}>
-            v2.5.0
+            v1.0-alpha
           </span>
         </div>
 

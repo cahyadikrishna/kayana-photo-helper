@@ -14,10 +14,13 @@ const appIcon = nativeImage.createFromPath(iconPath)
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 860,
+    width: 900,
+    height: 700,
+    minWidth: 900,
+    minHeight: 700,
     show: false,
     autoHideMenuBar: true,
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     // Provide an icon for Windows/Linux. On macOS the app bundle/dock icon is used instead.
     ...(process.platform === 'darwin' ? {} : { icon: appIcon }),
     webPreferences: {
@@ -207,25 +210,26 @@ app.whenReady().then(() => {
       }
 
       // Normalize identifier: strip separators between letter prefix and digits
-      const normalizeId = (s: string): string => s.toUpperCase().replace(/[\-_]/g, '')
+      const normalizeId = (s: string): string => s.toUpperCase().replace(/[-_]/g, '')
 
       const matchFileToIdentifier = (file: string, identifier: string): boolean => {
         if (/^\d+$/.test(identifier)) {
-          // Pure number: match by integer value
           const inputNum = parseInt(identifier, 10)
-          const fileNums = file.match(/\d+/g) || []
-          return fileNums.some((fn) => parseInt(fn, 10) === inputNum)
+          const baseName = file.substring(0, file.lastIndexOf('.'))
+          const trailingMatch = baseName.match(/(\d+)$/)
+          return trailingMatch ? parseInt(trailingMatch[1], 10) === inputNum : false
         } else {
-          // Full identifier (e.g. KYN3185): normalize and check containment
           const normIdent = normalizeId(identifier)
           const fileBase = normalizeId(file.substring(0, file.lastIndexOf('.')))
-          return fileBase.includes(normIdent)
+          return fileBase === normIdent
         }
       }
 
       for (const inputNumber of inputNumbers) {
         try {
-          const matchingFiles = imageFiles.filter((file) => matchFileToIdentifier(file, inputNumber))
+          const matchingFiles = imageFiles.filter((file) =>
+            matchFileToIdentifier(file, inputNumber)
+          )
 
           if (matchingFiles.length === 0) {
             results.notFound.push(inputNumber)
@@ -245,7 +249,9 @@ app.whenReady().then(() => {
           }
         } catch (error) {
           console.error(`Failed to copy files for ${inputNumber}:`, error)
-          const matchingFiles = imageFiles.filter((file) => matchFileToIdentifier(file, inputNumber))
+          const matchingFiles = imageFiles.filter((file) =>
+            matchFileToIdentifier(file, inputNumber)
+          )
 
           if (matchingFiles.length > 0) {
             const prioritizedFiles = prioritizeRawFiles(matchingFiles)

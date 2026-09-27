@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
   Folder,
   FolderPlus,
@@ -11,28 +11,45 @@ import {
   Moon,
   AlertCircle,
   Check,
-  Loader2
+  Loader2,
+  RefreshCw
 } from 'lucide-react'
 import { matchIdentifiers, parseIdentifiers, type FormatPreference } from '../../shared/matching'
 import type { CopyResults } from '../../shared/types'
 
 type JobStatus = 'idle' | 'running' | 'done' | 'error'
 
+const FORMAT_OPTIONS: { value: FormatPreference; label: string }[] = [
+  { value: 'raw', label: 'RAW only' },
+  { value: 'jpg', label: 'JPG only' },
+  { value: 'both', label: 'Both' }
+]
+
+const loadFormatPreference = (): FormatPreference => {
+  try {
+    const saved = localStorage.getItem('kh_format')
+    if (saved === 'raw' || saved === 'jpg' || saved === 'both') return saved
+  } catch {
+    // storage unavailable — use default
+  }
+  return 'raw'
+}
+
 function App(): React.JSX.Element {
   const [fileNames, setFileNames] = useState('')
   const [sourceFolder, setSourceFolder] = useState('')
+  const [sourceFiles, setSourceFiles] = useState<string[]>([])
+  const [isScanning, setIsScanning] = useState(false)
   const [destFolder, setDestFolder] = useState('')
   const [destMode, setDestMode] = useState<'create' | 'select'>('create')
   const [customFolderName, setCustomFolderName] = useState('')
-  const [formatPreference] = useState<FormatPreference>('raw')
+  const [destCreateError, setDestCreateError] = useState('')
+  const [formatPreference, setFormatPreference] = useState<FormatPreference>(loadFormatPreference)
   const [isProcessing, setIsProcessing] = useState(false)
   const [previewNumbers, setPreviewNumbers] = useState<string[]>([])
-  const [matchedFiles, setMatchedFiles] = useState<string[]>([])
-  const [matchResults, setMatchResults] = useState<
-    { identifier: string; matchedFiles: string[] }[]
-  >([])
   const [results, setResults] = useState<CopyResults | null>(null)
   const [destPathError, setDestPathError] = useState('')
+  const [clipboardError, setClipboardError] = useState('')
   const [duplicateInputs, setDuplicateInputs] = useState<Map<string, number>>(new Map())
   const [job, setJob] = useState<JobStatus>('idle')
   const [progress, setProgress] = useState(0)
@@ -42,6 +59,9 @@ function App(): React.JSX.Element {
   const [showModal, setShowModal] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const copyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const clipboardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Incremented on every scan request; responses from older scans are ignored.
+  const scanIdRef = useRef(0)
 
   // Theme
   useEffect(() => {
@@ -68,30 +88,66 @@ function App(): React.JSX.Element {
     setDuplicateInputs(duplicates)
   }, [fileNames])
 
-  useEffect(() => {
-    const updateMatchedFiles = async (): Promise<void> => {
-      if (sourceFolder && previewNumbers.length > 0) {
-        try {
-          const sourceFiles = await window.api.getSourceFiles(sourceFolder)
-
-          const results = matchIdentifiers(sourceFiles, previewNumbers, formatPreference).map(
-            (r) => ({ identifier: r.identifier, matchedFiles: r.files })
-          )
-          const matched = results.flatMap((r) => r.matchedFiles)
-
-          setMatchedFiles([...new Set(matched)])
-          setMatchResults(results)
-        } catch (error) {
-          console.error('Error getting source files:', error)
-        }
-      } else {
-        setMatchedFiles([])
-        setMatchResults([])
-      }
+  // Scan the source folder once per selection (or on Rescan), not per keystroke.
+  const scanSource = useCallback(async (folder: string): Promise<void> => {
+    const scanId = ++scanIdRef.current
+    if (!folder) {
+      setSourceFiles([])
+      setIsScanning(false)
+      return
     }
+    setIsScanning(true)
+    try {
+      const files = await window.api.getSourceFiles(folder)
+      if (scanId === scanIdRef.current) setSourceFiles(files)
+    } catch (error) {
+      console.error('Error getting source files:', error)
+      if (scanId === scanIdRef.current) setSourceFiles([])
+    } finally {
+      if (scanId === scanIdRef.current) setIsScanning(false)
+    }
+  }, [])
 
-    updateMatchedFiles()
-  }, [sourceFolder, previewNumbers, formatPreference])
+  useEffect(() => {
+    scanSource(sourceFolder)
+  }, [sourceFolder, scanSource])
+
+  const matchResults = useMemo(
+    () =>
+      sourceFolder && previewNumbers.length > 0
+        ? matchIdentifiers(sourceFiles, previewNumbers, formatPreference).map((r) => ({
+            identifier: r.identifier,
+            matchedFiles: r.files
+          }))
+        : [],
+    [sourceFolder, sourceFiles, previewNumbers, formatPreference]
+  )
+  const matchedFiles = useMemo(
+    () => [...new Set(matchResults.flatMap((r) => r.matchedFiles))],
+    [matchResults]
+  )
+
+  const changeFormatPreference = (next: FormatPreference): void => {
+    setFormatPreference(next)
+    try {
+      localStorage.setItem('kh_format', next)
+    } catch {
+      // storage unavailable — preference just won't persist
+    }
+  }
+
+  const showClipboardError = (): void => {
+    setClipboardError("Couldn't read clipboard — paste with ⌘V / Ctrl+V")
+    if (clipboardTimerRef.current) clearTimeout(clipboardTimerRef.current)
+    clipboardTimerRef.current = setTimeout(() => setClipboardError(''), 4000)
+  }
+
+  useEffect(
+    () => () => {
+      if (clipboardTimerRef.current) clearTimeout(clipboardTimerRef.current)
+    },
+    []
+  )
 
   const handleSelectFolder = async (type: 'source' | 'destination'): Promise<void> => {
     const folderPath = await window.api.selectFolder(type)
@@ -113,7 +169,8 @@ function App(): React.JSX.Element {
     }
   }
 
-  const handleCopyFiles = async (): Promise<void> => {
+  // useCallback with full deps so Cmd/Ctrl+Enter always runs with the current form state.
+  const handleCopyFiles = useCallback(async (): Promise<void> => {
     if (!sourceFolder || !fileNames.trim()) return
 
     let finalDestFolder = ''
@@ -121,9 +178,10 @@ function App(): React.JSX.Element {
       if (!customFolderName.trim()) return
       const created = await window.api.createDestFolder(customFolderName.trim())
       if (!created.ok) {
-        console.error('Error creating destination folder:', created.error)
+        setDestCreateError(created.error)
         return
       }
+      setDestCreateError('')
       finalDestFolder = created.path
     } else {
       if (!destFolder) return
@@ -164,7 +222,7 @@ function App(): React.JSX.Element {
       setIsProcessing(false)
       setProgress(0)
     }
-  }
+  }, [sourceFolder, fileNames, destMode, customFolderName, destFolder, formatPreference])
 
   const resetAppState = (): void => {
     setFileNames('')
@@ -172,11 +230,11 @@ function App(): React.JSX.Element {
     setDestFolder('')
     setDestMode('create')
     setCustomFolderName('')
+    setDestCreateError('')
     setPreviewNumbers([])
-    setMatchedFiles([])
-    setMatchResults([])
     setResults(null)
     setDestPathError('')
+    setClipboardError('')
     setDuplicateInputs(new Map())
     setJob('idle')
     setProgress(0)
@@ -197,7 +255,8 @@ function App(): React.JSX.Element {
   const sourceDone = !!sourceFolder
   const destDone = destMode === 'create' ? !!customFolderName.trim() : !!destFolder
   const framesDone = previewNumbers.length > 0 && matchedFiles.length > 0
-  const isReady = sourceDone && destDone && framesDone && !isProcessing && job !== 'running'
+  const isReady =
+    sourceDone && destDone && framesDone && !isScanning && !isProcessing && job !== 'running'
 
   const unmatchedIds = matchResults
     .filter((r) => r.matchedFiles.length === 0)
@@ -215,6 +274,27 @@ function App(): React.JSX.Element {
   const stateClass =
     job === 'running' ? 'running' : job === 'done' ? 'done' : job === 'error' ? 'error' : 'standby'
 
+  // Results outcome: never claim success when nothing (or not everything) was copied
+  const resultOutcome: 'ok' | 'issues' | 'none' = !results
+    ? 'ok'
+    : results.success.length === 0 && (results.failed.length > 0 || results.notFound.length > 0)
+      ? 'none'
+      : results.failed.length > 0 || results.notFound.length > 0 || results.skipped.length > 0
+        ? 'issues'
+        : 'ok'
+  const resultHeadline =
+    resultOutcome === 'none'
+      ? 'Nothing copied'
+      : resultOutcome === 'issues'
+        ? 'Copy finished with issues'
+        : 'Copy complete'
+  const resultTone =
+    resultOutcome === 'none'
+      ? 'var(--color-danger)'
+      : resultOutcome === 'issues'
+        ? 'var(--color-warning)'
+        : 'var(--color-success)'
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
@@ -228,7 +308,7 @@ function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isReady, showModal])
+  }, [isReady, showModal, handleCopyFiles])
 
   // ─── Render helpers ───
 
@@ -352,7 +432,33 @@ function App(): React.JSX.Element {
               </div>
               {sourceFolder && (
                 <button
+                  onClick={() => scanSource(sourceFolder)}
+                  disabled={isScanning}
+                  aria-label="Rescan source folder"
+                  title="Rescan source folder"
+                  className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms]"
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid transparent',
+                    color: 'var(--color-text-muted)'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.color = 'var(--color-text)'
+                    e.currentTarget.style.background = 'var(--color-surface-2)'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.color = 'var(--color-text-muted)'
+                    e.currentTarget.style.background = 'transparent'
+                  }}
+                >
+                  <RefreshCw size={12} className={isScanning ? 'animate-spin' : undefined} />
+                </button>
+              )}
+              {sourceFolder && (
+                <button
                   onClick={() => setSourceFolder('')}
+                  aria-label="Clear source folder"
+                  title="Clear source folder"
                   className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms]"
                   style={{
                     background: 'transparent',
@@ -490,7 +596,10 @@ function App(): React.JSX.Element {
                 <input
                   type="text"
                   value={customFolderName}
-                  onChange={(e) => setCustomFolderName(e.target.value)}
+                  onChange={(e) => {
+                    setCustomFolderName(e.target.value)
+                    setDestCreateError('')
+                  }}
                   placeholder="Enter folder name..."
                   className="w-full rounded-lg px-3 py-2 text-[12.5px] outline-none"
                   style={{
@@ -500,6 +609,21 @@ function App(): React.JSX.Element {
                     fontFamily: 'inherit'
                   }}
                 />
+                {destCreateError && (
+                  <div
+                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
+                    style={{
+                      background:
+                        'color-mix(in oklab, var(--color-danger) 10%, var(--color-surface))',
+                      border:
+                        '1px solid color-mix(in oklab, var(--color-danger) 30%, var(--color-border))',
+                      color: 'var(--color-danger)'
+                    }}
+                  >
+                    <AlertCircle size={12} />
+                    <span>{destCreateError}</span>
+                  </div>
+                )}
               </div>
             ) : (
               <>
@@ -539,6 +663,8 @@ function App(): React.JSX.Element {
                   {destFolder && (
                     <button
                       onClick={() => setDestFolder('')}
+                      aria-label="Clear destination folder"
+                      title="Clear destination folder"
                       className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms]"
                       style={{
                         background: 'transparent',
@@ -630,6 +756,39 @@ function App(): React.JSX.Element {
             </span>
           </div>
           <div className="flex flex-col" style={{ gap }}>
+            {/* Format preference: which file(s) to copy when a shot has RAW + JPG */}
+            <div
+              role="radiogroup"
+              aria-label="Formats to copy"
+              className="grid grid-cols-3 rounded-lg p-[3px]"
+              style={{
+                background: 'var(--color-surface)',
+                border: '1px solid var(--color-border)'
+              }}
+            >
+              {FORMAT_OPTIONS.map((option) => {
+                const active = formatPreference === option.value
+                return (
+                  <button
+                    key={option.value}
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => changeFormatPreference(option.value)}
+                    className="flex items-center justify-center rounded-md px-2.5 py-[7px] text-[11.5px] font-medium transition-all duration-[120ms]"
+                    style={{
+                      background: active ? 'var(--color-surface-inset)' : 'transparent',
+                      color: active ? 'var(--color-text)' : 'var(--color-text-muted)',
+                      boxShadow: active ? '0 0 0 1px var(--color-border-strong)' : 'none',
+                      border: 0,
+                      fontFamily: 'inherit'
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                )
+              })}
+            </div>
+
             <div
               className="relative flex rounded-lg"
               style={{
@@ -660,7 +819,8 @@ function App(): React.JSX.Element {
                       border: '1px solid var(--color-border)',
                       color: 'var(--color-text-muted)'
                     }}
-                    title="Clear"
+                    title="Clear list"
+                    aria-label="Clear photo numbers"
                   >
                     <Trash2 size={11} />
                   </button>
@@ -669,11 +829,14 @@ function App(): React.JSX.Element {
                   onClick={async () => {
                     try {
                       const text = await navigator.clipboard.readText()
+                      setClipboardError('')
                       setFileNames((prev) => (prev + (prev ? '\n' : '') + text).trim())
                     } catch {
-                      setFileNames('KYN3185, 3190, 3555, 5504')
+                      // Never touch the input on failure — just tell the editor.
+                      showClipboardError()
                     }
                   }}
+                  aria-label="Paste from clipboard"
                   className="w-[22px] h-[22px] rounded-md grid place-items-center cursor-pointer"
                   style={{
                     background: 'var(--color-surface-inset)',
@@ -686,6 +849,22 @@ function App(): React.JSX.Element {
                 </button>
               </div>
             </div>
+
+            {clipboardError && (
+              <div
+                role="alert"
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
+                style={{
+                  background: 'color-mix(in oklab, var(--color-danger) 10%, var(--color-surface))',
+                  border:
+                    '1px solid color-mix(in oklab, var(--color-danger) 30%, var(--color-border))',
+                  color: 'var(--color-danger)'
+                }}
+              >
+                <AlertCircle size={12} />
+                <span>{clipboardError}</span>
+              </div>
+            )}
 
             {/* Duplicate warning */}
             {duplicateInputs.size > 0 && (
@@ -990,7 +1169,7 @@ function App(): React.JSX.Element {
         </button>
       </div>
 
-      {/* Success Modal */}
+      {/* Results Modal */}
       {showModal && results && (
         <div
           className="absolute inset-0 grid place-items-center z-50"
@@ -1013,29 +1192,35 @@ function App(): React.JSX.Element {
             <div
               className="w-[34px] h-[34px] rounded-full grid place-items-center"
               style={{
-                background: 'color-mix(in oklab, var(--color-success) 16%, var(--color-surface))',
-                color: 'var(--color-success)'
+                background: `color-mix(in oklab, ${resultTone} 16%, var(--color-surface))`,
+                color: resultTone
               }}
             >
-              <Check size={16} strokeWidth={2.5} />
+              {resultOutcome === 'ok' ? (
+                <Check size={16} strokeWidth={2.5} />
+              ) : resultOutcome === 'none' ? (
+                <X size={16} strokeWidth={2.5} />
+              ) : (
+                <AlertCircle size={16} strokeWidth={2.5} />
+              )}
             </div>
             <div>
               <h3
                 className="text-[15px] font-semibold tracking-[-0.01em] m-0"
                 style={{ color: 'var(--color-text)' }}
               >
-                Copy complete
+                {resultHeadline}
               </h3>
               <p
                 className="text-[11.5px] leading-[1.5] m-0"
                 style={{ color: 'var(--color-text-muted)' }}
               >
-                {results.success.length} files copied, {results.notFound.length} not found,{' '}
-                {results.failed.length} failed.
+                {results.success.length} files copied, {results.skipped.length} skipped,{' '}
+                {results.notFound.length} not found, {results.failed.length} failed.
               </p>
             </div>
             <div
-              className="grid grid-cols-3 gap-2"
+              className="grid grid-cols-4 gap-2"
               style={{
                 padding: '10px 12px',
                 background: 'var(--color-surface-inset)',
@@ -1055,6 +1240,20 @@ function App(): React.JSX.Element {
                   style={{ color: 'var(--color-text)' }}
                 >
                   {results.success.length}
+                </dd>
+              </div>
+              <div>
+                <dt
+                  className="text-[10px] font-mono tracking-[0.06em] m-0"
+                  style={{ color: 'var(--color-text-soft)' }}
+                >
+                  SKIPPED
+                </dt>
+                <dd
+                  className="font-mono text-[12.5px] font-semibold mt-0.5"
+                  style={{ color: 'var(--color-text)' }}
+                >
+                  {results.skipped.length}
                 </dd>
               </div>
               <div>
@@ -1124,6 +1323,17 @@ function App(): React.JSX.Element {
                       }}
                     >
                       {s.input}
+                    </span>
+                  ))}
+                  {results.skipped.map((sk, i) => (
+                    <span
+                      key={`sk-${i}`}
+                      style={{
+                        color:
+                          'color-mix(in oklab, var(--color-warning) 55%, var(--color-text-soft))'
+                      }}
+                    >
+                      {sk.input} → {sk.matched} ({sk.reason})
                     </span>
                   ))}
                   {results.notFound.map((id, i) => (

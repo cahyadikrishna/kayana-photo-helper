@@ -12,7 +12,10 @@ import {
   getFreeSpace,
   listSourceFiles
 } from './copy'
+import { setupAutoUpdates } from './updater'
 
+// Copies in progress, so an update restart never interrupts one
+let runningCopies = 0
 // The copy job in progress, so the renderer can cancel it
 let activeCopy: AbortController | null = null
 
@@ -139,6 +142,7 @@ app.whenReady().then(() => {
     ): Promise<CopyResults> => {
       const controller = new AbortController()
       activeCopy = controller
+      runningCopies++
       try {
         return await copyMatchedFiles(sourceFolder, destFolder, identifiers, preference, {
           conflict,
@@ -146,6 +150,7 @@ app.whenReady().then(() => {
           onProgress: (progress) => event.sender.send('copy-progress', progress)
         })
       } finally {
+        runningCopies--
         if (activeCopy === controller) activeCopy = null
       }
     }
@@ -167,6 +172,8 @@ app.whenReady().then(() => {
   ipcMain.handle('open-folder', (_, folder: string) => shell.openPath(folder))
 
   createWindow()
+
+  setupAutoUpdates(() => runningCopies > 0)
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

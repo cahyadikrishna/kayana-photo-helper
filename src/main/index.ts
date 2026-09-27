@@ -5,6 +5,10 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { FormatPreference } from '../shared/matching'
 import type { CopyResults, CreateDestFolderResult } from '../shared/types'
 import { copyMatchedFiles, createDestFolder, getFreeSpace, listSourceFiles } from './copy'
+import { setupAutoUpdates } from './updater'
+
+// Copies in progress, so an update restart never interrupts one
+let runningCopies = 0
 
 // Must be set at module level (before app.whenReady) for macOS dock tooltip to work
 app.setName('Kayana Photo Helper')
@@ -125,10 +129,17 @@ app.whenReady().then(() => {
       destFolder: string,
       identifiers: string[],
       preference: FormatPreference
-    ): Promise<CopyResults> => copyMatchedFiles(sourceFolder, destFolder, identifiers, preference)
+    ): Promise<CopyResults> => {
+      runningCopies++
+      return copyMatchedFiles(sourceFolder, destFolder, identifiers, preference).finally(() => {
+        runningCopies--
+      })
+    }
   )
 
   createWindow()
+
+  setupAutoUpdates(() => runningCopies > 0)
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the

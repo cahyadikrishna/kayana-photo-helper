@@ -9,6 +9,7 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!dist/**'
 asarUnpack:
   - resources/**
 win:
@@ -19,6 +20,15 @@ nsis:
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
 mac:
+  # One universal build runs on both Apple Silicon and Intel Macs. The zip is
+  # what electron-updater uses on macOS once the app is signed.
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  # No spaces: GitHub renames uploaded files with spaces, breaking latest-mac.yml
+  artifactName: ${name}-${version}-${arch}.${ext}
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -28,8 +38,6 @@ mac:
   notarize: false
   gatekeeperAssess: false
   hardenedRuntime: false
-dmg:
-  artifactName: ${name}-${version}.${ext}
 linux:
   target:
     - AppImage
@@ -41,7 +49,9 @@ appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
 publish:
-  provider: generic
-  url: https://example.com/auto-updates
+  provider: github
+  owner: cahyadikrishna
+  repo: kayana-photo-helper-releases
+  releaseType: release
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

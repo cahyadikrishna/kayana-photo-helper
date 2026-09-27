@@ -13,12 +13,15 @@ import {
   Check,
   Loader2,
   RefreshCw,
-  Copy
+  Ban
 } from 'lucide-react'
 import { matchIdentifiers, parseIdentifiers, type FormatPreference } from '../../shared/matching'
 import { buildPreview, formatBytes, missingListText } from '../../shared/preview'
+import { resultOutcome } from '../../shared/results'
 import { MatchList } from './components/MatchList'
-import type { CopyResults, SourceFile } from '../../shared/types'
+import { ConflictDialog } from './components/ConflictDialog'
+import { ResultsModal } from './components/ResultsModal'
+import type { ConflictPolicy, CopyProgress, CopyResults, SourceFile } from '../../shared/types'
 
 type JobStatus = 'idle' | 'running' | 'done' | 'error'
 
@@ -57,13 +60,19 @@ function App(): React.JSX.Element {
   const [freeSpace, setFreeSpace] = useState<number | null>(null)
   const [duplicateInputs, setDuplicateInputs] = useState<Map<string, number>>(new Map())
   const [job, setJob] = useState<JobStatus>('idle')
-  const [progress, setProgress] = useState(0)
+  const [progress, setProgress] = useState<CopyProgress | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  // Destination of the last job, for "Show in Finder"
+  const [lastDest, setLastDest] = useState('')
+  // Files already in the destination; set while the Skip / Replace dialog is open
+  const [conflict, setConflict] = useState<{ dest: string; existing: string[] } | null>(null)
+  // Create-new mode: info about an existing Downloads folder with the same name
+  const [existingFolder, setExistingFolder] = useState<{ fileCount: number } | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const [theme, setTheme] = useState<'dark' | 'light'>('dark')
   const [showLogs, setShowLogs] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const copyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const clipboardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const missingCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Incremented on every scan request; responses from older scans are ignored.
@@ -204,11 +213,63 @@ function App(): React.JSX.Element {
     }
   }
 
+  const filesToCopy = useMemo(
+    () => [...new Set(preview?.rows.flatMap((r) => r.files) ?? [])],
+    [preview]
+  )
+
+  const runCopy = useCallback(
+    async (dest: string, policy: ConflictPolicy): Promise<void> => {
+      setConflict(null)
+      setIsProcessing(true)
+      setResults(null)
+      setJob('running')
+      setProgress(null)
+      setCancelling(false)
+      setLastDest(dest)
+      const startedAt = Date.now()
+      const unsubscribe = window.api.onCopyProgress(setProgress)
+
+      let copyResults: CopyResults
+      try {
+        copyResults = await window.api.copyFiles(
+          sourceFolder,
+          dest,
+          parseIdentifiers(fileNames).identifiers,
+          formatPreference,
+          policy
+        )
+      } catch (error) {
+        console.error('Error copying files:', error)
+        copyResults = {
+          success: [],
+          failed: [],
+          skipped: [],
+          notFound: [],
+          error: 'Something went wrong while copying — please try again'
+        }
+      } finally {
+        unsubscribe()
+        setIsProcessing(false)
+        setProgress(null)
+        setCancelling(false)
+      }
+
+      setResults(copyResults)
+      setJob(copyResults.error ? 'error' : 'done')
+      setElapsed((Date.now() - startedAt) / 1000)
+      // Open the details straight away when something needs attention
+      setShowLogs(!['ok', 'failed'].includes(resultOutcome(copyResults)))
+      setShowModal(true)
+    },
+    [sourceFolder, fileNames, formatPreference]
+  )
+
   // useCallback with full deps so Cmd/Ctrl+Enter always runs with the current form state.
   const handleCopyFiles = useCallback(async (): Promise<void> => {
     if (!sourceFolder || !fileNames.trim()) return
 
-    let finalDestFolder = ''
+    let dest = ''
     if (destMode === 'create') {
       if (!customFolderName.trim()) return
       const created = await window.api.createDestFolder(customFolderName.trim())
@@ -217,47 +278,45 @@ function App(): React.JSX.Element {
         return
       }
       setDestCreateError('')
-      finalDestFolder = created.path
+      dest = created.path
     } else {
       if (!destFolder) return
-      finalDestFolder = destFolder
+      dest = destFolder
     }
 
-    setIsProcessing(true)
-    setResults(null)
-    setJob('running')
-    setProgress(0)
-    const startedAt = Date.now()
-
-    const { identifiers } = parseIdentifiers(fileNames)
-
-    // Simulate progress while actual copy happens
-    copyTimerRef.current = setInterval(() => {
-      setProgress((p) => Math.min(95, p + Math.random() * 7 + 3))
-    }, 180)
-
-    try {
-      const copyResults = await window.api.copyFiles(
-        sourceFolder,
-        finalDestFolder,
-        identifiers,
-        formatPreference
-      )
-      if (copyTimerRef.current) clearInterval(copyTimerRef.current)
-      setProgress(100)
-      setResults(copyResults)
-      setJob('done')
-      setElapsed((Date.now() - startedAt) / 1000)
-      setShowModal(true)
-    } catch (error) {
-      if (copyTimerRef.current) clearInterval(copyTimerRef.current)
-      console.error('Error copying files:', error)
-      setJob('error')
-    } finally {
-      setIsProcessing(false)
-      setProgress(0)
+    // Ask once, up front, instead of silently skipping or overwriting
+    const existing = await window.api.findExistingFiles(dest, filesToCopy)
+    if (existing.length > 0) {
+      setConflict({ dest, existing })
+      return
     }
-  }, [sourceFolder, fileNames, destMode, customFolderName, destFolder, formatPreference])
+    await runCopy(dest, 'skip')
+  }, [sourceFolder, fileNames, destMode, customFolderName, destFolder, filesToCopy, runCopy])
+
+  const cancelCopy = (): void => {
+    setCancelling(true)
+    window.api.cancelCopy()
+  }
+
+  // Create-new mode: tell the editor when the folder already exists in Downloads
+  useEffect(() => {
+    const name = customFolderName.trim()
+    if (destMode !== 'create' || !name) {
+      setExistingFolder(null)
+      return
+    }
+    let cancelled = false
+    const timer = setTimeout(() => {
+      window.api
+        .describeDownloadsFolder(name)
+        .then((info) => !cancelled && setExistingFolder(info))
+        .catch(() => !cancelled && setExistingFolder(null))
+    }, 250)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [destMode, customFolderName, job])
 
   const resetAppState = (): void => {
     setFileNames('')
@@ -272,15 +331,17 @@ function App(): React.JSX.Element {
     setClipboardError('')
     setDuplicateInputs(new Map())
     setJob('idle')
-    setProgress(0)
+    setProgress(null)
     setElapsed(0)
     setShowModal(false)
     setShowLogs(false)
+    setLastDest('')
   }
 
   const restartJob = (): void => {
     setJob('idle')
-    setProgress(0)
+    setResults(null)
+    setProgress(null)
     setElapsed(0)
     setShowModal(false)
     setShowLogs(false)
@@ -297,7 +358,14 @@ function App(): React.JSX.Element {
     !notEnoughSpace &&
     !isScanning &&
     !isProcessing &&
+    !conflict &&
     job !== 'running'
+
+  const progressPercent = !progress
+    ? 0
+    : progress.bytesTotal > 0
+      ? (progress.bytesDone / progress.bytesTotal) * 100
+      : (progress.done / Math.max(progress.total, 1)) * 100
 
   const stateLabel =
     job === 'running'
@@ -310,27 +378,6 @@ function App(): React.JSX.Element {
   const stateClass =
     job === 'running' ? 'running' : job === 'done' ? 'done' : job === 'error' ? 'error' : 'standby'
 
-  // Results outcome: never claim success when nothing (or not everything) was copied
-  const resultOutcome: 'ok' | 'issues' | 'none' = !results
-    ? 'ok'
-    : results.success.length === 0 && (results.failed.length > 0 || results.notFound.length > 0)
-      ? 'none'
-      : results.failed.length > 0 || results.notFound.length > 0 || results.skipped.length > 0
-        ? 'issues'
-        : 'ok'
-  const resultHeadline =
-    resultOutcome === 'none'
-      ? 'Nothing copied'
-      : resultOutcome === 'issues'
-        ? 'Copy finished with issues'
-        : 'Copy complete'
-  const resultTone =
-    resultOutcome === 'none'
-      ? 'var(--color-danger)'
-      : resultOutcome === 'issues'
-        ? 'var(--color-warning)'
-        : 'var(--color-success)'
-
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent): void => {
@@ -338,13 +385,15 @@ function App(): React.JSX.Element {
         e.preventDefault()
         if (isReady) handleCopyFiles()
       }
-      if (e.key === 'Escape' && showModal) {
-        setShowModal(false)
+      if (e.key === 'Escape') {
+        // Closing keeps the results; they can be reopened from the footer
+        if (showModal) setShowModal(false)
+        else if (conflict) setConflict(null)
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isReady, showModal, handleCopyFiles])
+  }, [isReady, showModal, conflict, handleCopyFiles])
 
   // ─── Render helpers ───
 
@@ -645,6 +694,20 @@ function App(): React.JSX.Element {
                     fontFamily: 'inherit'
                   }}
                 />
+                {existingFolder && !destCreateError && (
+                  <div
+                    className="flex items-center gap-2 px-0.5 text-[11px]"
+                    style={{ color: 'var(--color-text-muted)' }}
+                  >
+                    <Folder size={12} />
+                    <span>
+                      Folder already exists in Downloads
+                      {existingFolder.fileCount > 0 &&
+                        ` (${existingFolder.fileCount} file${existingFolder.fileCount !== 1 ? 's' : ''})`}{' '}
+                      — photos will be added to it.
+                    </span>
+                  </div>
+                )}
                 {destCreateError && (
                   <div
                     className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
@@ -985,6 +1048,19 @@ function App(): React.JSX.Element {
           >
             {stateLabel}
           </b>
+          {results && !showModal && job !== 'running' && (
+            <button
+              onClick={() => setShowModal(true)}
+              className="ml-1 px-2 h-[22px] rounded-md text-[11px] font-medium"
+              style={{
+                background: 'var(--color-surface)',
+                color: 'var(--color-text)',
+                border: '1px solid var(--color-border-strong)'
+              }}
+            >
+              View results
+            </button>
+          )}
         </div>
 
         <div className="flex gap-4 overflow-hidden" style={{ color: 'var(--color-text-muted)' }}>
@@ -1042,287 +1118,103 @@ function App(): React.JSX.Element {
           </span>
         </div>
 
-        <button
-          onClick={handleCopyFiles}
-          disabled={!isReady}
-          title={notEnoughSpace ? 'Not enough space on the destination' : undefined}
-          className="relative inline-flex items-center gap-2 overflow-hidden transition-all duration-[120ms]"
-          style={{
-            height: '30px',
-            padding: '0 16px',
-            borderRadius: 'var(--radius-md)',
-            background: job === 'running' ? 'var(--color-surface-inset)' : 'var(--color-accent)',
-            color: job === 'running' ? 'var(--color-text)' : 'var(--color-accent-ink)',
-            border: job === 'running' ? '1px solid var(--color-border-strong)' : '0',
-            fontWeight: 600,
-            fontSize: '12.5px',
-            fontFamily: 'inherit',
-            cursor: isReady ? 'pointer' : 'not-allowed',
-            opacity: isReady ? 1 : 0.45
-          }}
-        >
+        <div className="flex items-center gap-1.5">
           {job === 'running' && (
-            <span
-              className="absolute inset-0 pointer-events-none"
+            <button
+              onClick={cancelCopy}
+              disabled={cancelling}
+              className="inline-flex items-center gap-1.5 px-3 h-[30px] rounded-md text-[11.5px] font-medium"
               style={{
-                background: 'var(--color-accent-soft)',
-                borderRadius: 'var(--radius-md)',
-                width: `${progress}%`,
-                transition: 'width 200ms linear'
+                background: 'transparent',
+                color: 'var(--color-text)',
+                border: '1px solid var(--color-border-strong)',
+                opacity: cancelling ? 0.6 : 1
               }}
-            />
+            >
+              <Ban size={12} />
+              {cancelling ? 'Cancelling…' : 'Cancel'}
+            </button>
           )}
-          <span className="relative z-[2] inline-flex items-center gap-2">
-            {job === 'running' ? (
-              <>
-                <Loader2 size={12} className="animate-spin-slow" />
-                Copying <span className="font-mono opacity-70">{Math.round(progress)}%</span>
-              </>
-            ) : (
-              <>
-                <Play size={12} fill="currentColor" />
-                {preview && fileCount > 0
-                  ? `Copy ${fileCount} file${fileCount !== 1 ? 's' : ''} · ${formatBytes(preview.totalBytes)}`
-                  : 'Start copy'}
-              </>
+          <button
+            onClick={handleCopyFiles}
+            disabled={!isReady}
+            title={notEnoughSpace ? 'Not enough space on the destination' : undefined}
+            className="relative inline-flex items-center gap-2 overflow-hidden transition-all duration-[120ms]"
+            style={{
+              height: '30px',
+              padding: '0 16px',
+              borderRadius: 'var(--radius-md)',
+              background: job === 'running' ? 'var(--color-surface-inset)' : 'var(--color-accent)',
+              color: job === 'running' ? 'var(--color-text)' : 'var(--color-accent-ink)',
+              border: job === 'running' ? '1px solid var(--color-border-strong)' : '0',
+              fontWeight: 600,
+              fontSize: '12.5px',
+              fontFamily: 'inherit',
+              cursor: isReady ? 'pointer' : 'not-allowed',
+              opacity: isReady || job === 'running' ? 1 : 0.45
+            }}
+          >
+            {job === 'running' && (
+              <span
+                className="absolute inset-y-0 left-0 pointer-events-none"
+                style={{
+                  background: 'var(--color-accent-soft)',
+                  borderRadius: 'var(--radius-md)',
+                  width: `${progressPercent}%`,
+                  transition: 'width 200ms linear'
+                }}
+              />
             )}
-          </span>
-        </button>
+            <span className="relative z-[2] inline-flex items-center gap-2">
+              {job === 'running' ? (
+                <>
+                  <Loader2 size={12} className="animate-spin-slow" />
+                  {progress ? (
+                    <span className="font-mono">
+                      {progress.done} / {progress.total} · {formatBytes(progress.bytesDone)} of{' '}
+                      {formatBytes(progress.bytesTotal)}
+                    </span>
+                  ) : (
+                    'Starting…'
+                  )}
+                </>
+              ) : (
+                <>
+                  <Play size={12} fill="currentColor" />
+                  {preview && fileCount > 0
+                    ? `Copy ${fileCount} file${fileCount !== 1 ? 's' : ''} · ${formatBytes(preview.totalBytes)}`
+                    : 'Start copy'}
+                </>
+              )}
+            </span>
+          </button>
+        </div>
       </div>
 
-      {/* Results Modal */}
-      {showModal && results && (
-        <div
-          className="absolute inset-0 grid place-items-center z-50"
-          style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(2px)' }}
-          onClick={() => setShowModal(false)}
-        >
-          <div
-            className="flex flex-col gap-3"
-            style={{
-              width: '380px',
-              background: 'var(--color-surface)',
-              border: '1px solid var(--color-border-strong)',
-              borderRadius: '12px',
-              boxShadow:
-                'var(--shadow-lg, 0 20px 40px -20px rgba(0,0,0,0.7), 0 2px 4px rgba(0,0,0,0.3))',
-              padding: '20px'
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div
-              className="w-[34px] h-[34px] rounded-full grid place-items-center"
-              style={{
-                background: `color-mix(in oklab, ${resultTone} 16%, var(--color-surface))`,
-                color: resultTone
-              }}
-            >
-              {resultOutcome === 'ok' ? (
-                <Check size={16} strokeWidth={2.5} />
-              ) : resultOutcome === 'none' ? (
-                <X size={16} strokeWidth={2.5} />
-              ) : (
-                <AlertCircle size={16} strokeWidth={2.5} />
-              )}
-            </div>
-            <div>
-              <h3
-                className="text-[15px] font-semibold tracking-[-0.01em] m-0"
-                style={{ color: 'var(--color-text)' }}
-              >
-                {resultHeadline}
-              </h3>
-              <p
-                className="text-[11.5px] leading-[1.5] m-0"
-                style={{ color: 'var(--color-text-muted)' }}
-              >
-                {results.success.length} files copied, {results.skipped.length} skipped,{' '}
-                {results.notFound.length} not found, {results.failed.length} failed.
-              </p>
-            </div>
-            <div
-              className="grid grid-cols-4 gap-2"
-              style={{
-                padding: '10px 12px',
-                background: 'var(--color-surface-inset)',
-                borderRadius: 'var(--radius-sm)',
-                border: '1px solid var(--color-border)'
-              }}
-            >
-              <div>
-                <dt
-                  className="text-[10px] font-mono tracking-[0.06em] m-0"
-                  style={{ color: 'var(--color-text-soft)' }}
-                >
-                  COPIED
-                </dt>
-                <dd
-                  className="font-mono text-[12.5px] font-semibold mt-0.5"
-                  style={{ color: 'var(--color-text)' }}
-                >
-                  {results.success.length}
-                </dd>
-              </div>
-              <div>
-                <dt
-                  className="text-[10px] font-mono tracking-[0.06em] m-0"
-                  style={{ color: 'var(--color-text-soft)' }}
-                >
-                  SKIPPED
-                </dt>
-                <dd
-                  className="font-mono text-[12.5px] font-semibold mt-0.5"
-                  style={{ color: 'var(--color-text)' }}
-                >
-                  {results.skipped.length}
-                </dd>
-              </div>
-              <div>
-                <dt
-                  className="text-[10px] font-mono tracking-[0.06em] m-0"
-                  style={{ color: 'var(--color-text-soft)' }}
-                >
-                  NOT FOUND
-                </dt>
-                <dd
-                  className="font-mono text-[12.5px] font-semibold mt-0.5"
-                  style={{ color: 'var(--color-text)' }}
-                >
-                  {results.notFound.length}
-                </dd>
-              </div>
-              <div>
-                <dt
-                  className="text-[10px] font-mono tracking-[0.06em] m-0"
-                  style={{ color: 'var(--color-text-soft)' }}
-                >
-                  ELAPSED
-                </dt>
-                <dd
-                  className="font-mono text-[12.5px] font-semibold mt-0.5"
-                  style={{ color: 'var(--color-text)' }}
-                >
-                  {elapsed.toFixed(1)}s
-                </dd>
-              </div>
-            </div>
-            {/* Expandable logs */}
-            <div className="flex flex-col gap-0">
-              <button
-                onClick={() => setShowLogs((v) => !v)}
-                className="flex items-center gap-1.5 text-[11px] font-mono w-fit transition-opacity duration-[120ms]"
-                style={{
-                  background: 'none',
-                  border: 'none',
-                  padding: 0,
-                  cursor: 'pointer',
-                  color: 'var(--color-text-soft)',
-                  fontFamily: 'var(--font-mono)'
-                }}
-              >
-                <span style={{ fontSize: '8px' }}>{showLogs ? '▼' : '▶'}</span>
-                {showLogs ? 'Hide logs' : 'Expand logs'}
-              </button>
-              {showLogs && (
-                <div
-                  className="flex flex-col overflow-y-auto font-mono text-[10.5px] leading-[1.6]"
-                  style={{
-                    marginTop: '6px',
-                    maxHeight: '140px',
-                    background: 'var(--color-surface-inset)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '8px 10px'
-                  }}
-                >
-                  {results.success.map((s, i) => (
-                    <span
-                      key={i}
-                      style={{
-                        color:
-                          'color-mix(in oklab, var(--color-success) 55%, var(--color-text-soft))'
-                      }}
-                    >
-                      {s.input}
-                    </span>
-                  ))}
-                  {results.skipped.map((sk, i) => (
-                    <span
-                      key={`sk-${i}`}
-                      style={{
-                        color:
-                          'color-mix(in oklab, var(--color-warning) 55%, var(--color-text-soft))'
-                      }}
-                    >
-                      {sk.input} → {sk.matched} ({sk.reason})
-                    </span>
-                  ))}
-                  {results.notFound.map((id, i) => (
-                    <span
-                      key={`nf-${i}`}
-                      style={{
-                        color:
-                          'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))'
-                      }}
-                    >
-                      {id}
-                    </span>
-                  ))}
-                  {results.failed.map((f, i) => (
-                    <span
-                      key={`f-${i}`}
-                      style={{
-                        color:
-                          'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))'
-                      }}
-                    >
-                      {f.input}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
+      {conflict && (
+        <ConflictDialog
+          existing={conflict.existing}
+          total={filesToCopy.length}
+          folderName={conflict.dest.split(/[\\/]/).pop() || conflict.dest}
+          onSkip={() => runCopy(conflict.dest, 'skip')}
+          onReplace={() => runCopy(conflict.dest, 'replace')}
+          onCancel={() => setConflict(null)}
+        />
+      )}
 
-            <div className="flex gap-2 justify-end mt-0.5">
-              {results.notFound.length > 0 && (
-                <button
-                  onClick={() => copyMissingList(results.notFound)}
-                  className="inline-flex items-center gap-1.5 px-3 h-[30px] rounded-md text-[11.5px] font-medium mr-auto transition-all duration-[120ms]"
-                  style={{
-                    background: 'transparent',
-                    color: 'var(--color-text-muted)',
-                    border: '1px solid var(--color-border)'
-                  }}
-                >
-                  {missingCopied ? <Check size={12} /> : <Copy size={12} />}
-                  {missingCopied ? 'Copied' : 'Copy missing list'}
-                </button>
-              )}
-              <button
-                onClick={restartJob}
-                className="inline-flex items-center gap-1.5 px-3.5 h-[30px] rounded-md text-[11.5px] font-medium transition-all duration-[120ms]"
-                style={{
-                  background: 'var(--color-surface-2)',
-                  color: 'var(--color-text)',
-                  border: '1px solid var(--color-border-strong)'
-                }}
-              >
-                Restart
-              </button>
-              <button
-                onClick={resetAppState}
-                className="inline-flex items-center gap-1.5 px-3.5 h-[30px] rounded-md text-[11.5px] font-semibold transition-all duration-[120ms]"
-                style={{
-                  background: 'var(--color-accent)',
-                  color: 'var(--color-accent-ink)',
-                  border: '0'
-                }}
-              >
-                Finish
-              </button>
-            </div>
-          </div>
-        </div>
+      {showModal && results && (
+        <ResultsModal
+          results={results}
+          elapsed={elapsed}
+          destFolder={lastDest}
+          showLogs={showLogs}
+          missingCopied={missingCopied}
+          onToggleLogs={() => setShowLogs((v) => !v)}
+          onCopyMissing={() => copyMissingList(results.notFound)}
+          onClose={() => setShowModal(false)}
+          onRestart={restartJob}
+          onDone={resetAppState}
+        />
       )}
     </div>
   )

@@ -1,8 +1,14 @@
 // File-system side of the copy job. No Electron imports so it can be unit tested.
 import { constants, promises as fs } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { basename, dirname, join, resolve } from 'path'
 import { isImageFile, matchIdentifiers, type FormatPreference } from '../shared/matching'
-import type { CopyResults, CreateDestFolderResult, SourceFile } from '../shared/types'
+import type {
+  ConflictPolicy,
+  CopyProgress,
+  CopyResults,
+  CreateDestFolderResult,
+  SourceFile
+} from '../shared/types'
 
 const ILLEGAL_CHARS_MESSAGE = 'Folder name can\'t contain / \\ : * ? " < > |'
 
@@ -55,41 +61,102 @@ export async function getFreeSpace(target: string): Promise<number | null> {
   }
 }
 
+export interface CopyOptions {
+  conflict?: ConflictPolicy
+  onProgress?: (progress: CopyProgress) => void
+  signal?: AbortSignal
+}
+
+// Which of `files` already exist in `destFolder` (none if it doesn't exist yet).
+export async function findExistingFiles(destFolder: string, files: string[]): Promise<string[]> {
+  try {
+    const existing = new Set(await fs.readdir(destFolder))
+    return files.filter((f) => existing.has(f))
+  } catch {
+    return []
+  }
+}
+
+// Copies via a temp file + rename so a failed copy never leaves a
+// half-written photo in place of the original.
+async function replaceFile(from: string, to: string): Promise<void> {
+  const tmp = join(dirname(to), `.${basename(to)}.kayana-tmp`)
+  try {
+    await fs.copyFile(from, tmp)
+    await fs.rename(tmp, to)
+  } catch (error) {
+    await fs.rm(tmp, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
 export async function copyMatchedFiles(
   sourceFolder: string,
   destFolder: string,
   identifiers: string[],
-  preference: FormatPreference
+  preference: FormatPreference,
+  { conflict = 'skip', onProgress, signal }: CopyOptions = {}
 ): Promise<CopyResults> {
   const results: CopyResults = { success: [], failed: [], skipped: [], notFound: [] }
-  const sourceFiles = (await listSourceFiles(sourceFolder)).map((f) => f.name)
 
-  for (const { identifier, files } of matchIdentifiers(sourceFiles, identifiers, preference)) {
-    if (files.length === 0) {
-      results.notFound.push(identifier)
-      continue
+  let sourceFiles: SourceFile[]
+  try {
+    sourceFiles = await listSourceFiles(sourceFolder)
+  } catch (error) {
+    console.error('Error reading source folder:', error)
+    results.error = "Can't read the source folder — is the card still connected?"
+    return results
+  }
+
+  const sizes = new Map(sourceFiles.map((f) => [f.name, f.size]))
+  const jobs: { identifier: string; file: string }[] = []
+  for (const { identifier, files } of matchIdentifiers(
+    sourceFiles.map((f) => f.name),
+    identifiers,
+    preference
+  )) {
+    if (files.length === 0) results.notFound.push(identifier)
+    for (const file of files) jobs.push({ identifier, file })
+  }
+
+  const bytesTotal = jobs.reduce((sum, j) => sum + (sizes.get(j.file) ?? 0), 0)
+  let done = 0
+  let bytesDone = 0
+
+  // Per file, so every file lands in exactly one bucket
+  for (const { identifier, file } of jobs) {
+    if (signal?.aborted) {
+      results.cancelled = true
+      break
     }
-    // Per file, so every file lands in exactly one bucket
-    for (const file of files) {
-      try {
-        await fs.copyFile(join(sourceFolder, file), join(destFolder, file), constants.COPYFILE_EXCL)
-        results.success.push({ input: identifier, matched: file })
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code === 'EEXIST') {
-          results.skipped.push({
-            input: identifier,
-            matched: file,
-            reason: 'Already exists in destination'
-          })
-        } else {
-          console.error(`Failed to copy ${file} for ${identifier}:`, error)
-          // COPYFILE_EXCL means any file at the destination is our partial copy
-          // (e.g. disk full mid-copy); remove it so a rerun doesn't skip it as existing.
-          await fs.rm(join(destFolder, file), { force: true }).catch(() => {})
-          results.failed.push({ input: identifier, matched: file, error: describeFsError(error) })
-        }
+    const from = join(sourceFolder, file)
+    const to = join(destFolder, file)
+    try {
+      if (conflict === 'replace') {
+        await replaceFile(from, to)
+      } else {
+        await fs.copyFile(from, to, constants.COPYFILE_EXCL)
+      }
+      results.success.push({ input: identifier, matched: file })
+    } catch (error) {
+      if (conflict === 'skip' && (error as NodeJS.ErrnoException)?.code === 'EEXIST') {
+        results.skipped.push({
+          input: identifier,
+          matched: file,
+          reason: 'Already exists in destination'
+        })
+      } else {
+        console.error(`Failed to copy ${file} for ${identifier}:`, error)
+        // With COPYFILE_EXCL any file at the destination is our partial copy
+        // (e.g. disk full mid-copy); remove it so a rerun doesn't skip it as existing.
+        // In replace mode the original is untouched (temp file), so leave it.
+        if (conflict === 'skip') await fs.rm(to, { force: true }).catch(() => {})
+        results.failed.push({ input: identifier, matched: file, error: describeFsError(error) })
       }
     }
+    done++
+    bytesDone += sizes.get(file) ?? 0
+    onProgress?.({ done, total: jobs.length, bytesDone, bytesTotal, current: file })
   }
 
   return results
@@ -128,5 +195,23 @@ export async function createDestFolder(
   } catch (error) {
     console.error('Error creating destination folder:', error)
     return { ok: false, error: `Couldn't create folder: ${describeFsError(error)}` }
+  }
+}
+
+// For the "folder already exists" hint in Create-new mode.
+// Null when the folder doesn't exist yet or the name is invalid.
+export async function describeDownloadsFolder(
+  downloadsDir: string,
+  folderName: string
+): Promise<{ fileCount: number } | null> {
+  if (validateFolderName(folderName)) return null
+  const base = resolve(downloadsDir)
+  const target = resolve(base, folderName.trim())
+  if (dirname(target) !== base) return null
+  try {
+    const entries = await fs.readdir(target)
+    return { fileCount: entries.filter((e) => !e.startsWith('.')).length }
+  } catch {
+    return null
   }
 }

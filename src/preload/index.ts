@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type { FormatPreference } from '../shared/matching'
+import type { ConflictPolicy, CopyProgress } from '../shared/types'
 
 // Custom APIs for renderer
 const api = {
@@ -14,8 +15,24 @@ const api = {
     sourceFolder: string,
     destFolder: string,
     identifiers: string[],
-    preference: FormatPreference
-  ) => ipcRenderer.invoke('copy-files', sourceFolder, destFolder, identifiers, preference)
+    preference: FormatPreference,
+    conflict: ConflictPolicy
+  ) =>
+    ipcRenderer.invoke('copy-files', sourceFolder, destFolder, identifiers, preference, conflict),
+  cancelCopy: () => ipcRenderer.invoke('cancel-copy'),
+  onCopyProgress: (callback: (progress: CopyProgress) => void) => {
+    const listener = (_: Electron.IpcRendererEvent, progress: CopyProgress): void =>
+      callback(progress)
+    ipcRenderer.on('copy-progress', listener)
+    return () => {
+      ipcRenderer.removeListener('copy-progress', listener)
+    }
+  },
+  findExistingFiles: (destFolder: string, files: string[]) =>
+    ipcRenderer.invoke('find-existing-files', destFolder, files),
+  describeDownloadsFolder: (folderName: string) =>
+    ipcRenderer.invoke('describe-downloads-folder', folderName),
+  openFolder: (folder: string) => ipcRenderer.invoke('open-folder', folder)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

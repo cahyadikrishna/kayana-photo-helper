@@ -117,3 +117,22 @@ html[data-theme='light'] {
 .animate-spin-slow {
   animation: spin 0.7s linear infinite;
 }
+
+/* Icon-only buttons: hover and keyboard focus look the same */
+.btn-ghost {
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+}
+.btn-ghost:hover:not(:disabled),
+.btn-ghost:focus-visible {
+  color: var(--color-text);
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+}
+
+/* Visible keyboard focus for every control */
+:where(button, a, [role='radio']):focus-visible {
+  outline: 2px solid var(--color-accent-ring);
+  outline-offset: 2px;
+}

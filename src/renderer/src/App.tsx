@@ -18,18 +18,40 @@ import {
 import { matchIdentifiers, parseIdentifiers, type FormatPreference } from '../../shared/matching'
 import { buildPreview, formatBytes, missingListText } from '../../shared/preview'
 import { resultOutcome } from '../../shared/results'
+import { footerStatus, type JobStatus } from './status'
 import { MatchList } from './components/MatchList'
 import { ConflictDialog } from './components/ConflictDialog'
 import { ResultsModal } from './components/ResultsModal'
 import type { ConflictPolicy, CopyProgress, CopyResults, SourceFile } from '../../shared/types'
-
-type JobStatus = 'idle' | 'running' | 'done' | 'error'
 
 const FORMAT_OPTIONS: { value: FormatPreference; label: string }[] = [
   { value: 'raw', label: 'RAW only' },
   { value: 'jpg', label: 'JPG only' },
   { value: 'both', label: 'Both' }
 ]
+
+// Per-editor conveniences; the app works the same when storage is unavailable
+const readPref = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key)
+  } catch {
+    return null
+  }
+}
+const writePref = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value)
+  } catch {
+    // storage unavailable — preference just won't persist
+  }
+}
+
+const loadDestMode = (): 'create' | 'select' =>
+  readPref('kh_dest_mode') === 'select' ? 'select' : 'create'
+
+// Keeps punctuation in place when a path is shown right-to-left (so it
+// truncates from the start): "/Volumes/SD/DCIM" instead of "Volumes/SD/DCIM/"
+const ltr = (text: string): string => `\u200E${text}\u200E`
 
 const loadFormatPreference = (): FormatPreference => {
   try {
@@ -47,7 +69,7 @@ function App(): React.JSX.Element {
   const [sourceFiles, setSourceFiles] = useState<SourceFile[]>([])
   const [isScanning, setIsScanning] = useState(false)
   const [destFolder, setDestFolder] = useState('')
-  const [destMode, setDestMode] = useState<'create' | 'select'>('create')
+  const [destMode, setDestModeState] = useState<'create' | 'select'>(loadDestMode)
   const [customFolderName, setCustomFolderName] = useState('')
   const [destCreateError, setDestCreateError] = useState('')
   const [formatPreference, setFormatPreference] = useState<FormatPreference>(loadFormatPreference)
@@ -73,6 +95,7 @@ function App(): React.JSX.Element {
   const [showLogs, setShowLogs] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const startButtonRef = useRef<HTMLButtonElement>(null)
   const clipboardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const missingCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Incremented on every scan request; responses from older scans are ignored.
@@ -193,9 +216,18 @@ function App(): React.JSX.Element {
     []
   )
 
+  const setDestMode = (mode: 'create' | 'select'): void => {
+    setDestModeState(mode)
+    writePref('kh_dest_mode', mode)
+  }
+
   const handleSelectFolder = async (type: 'source' | 'destination'): Promise<void> => {
-    const folderPath = await window.api.selectFolder(type)
+    // Open the picker where the editor last was; never pre-fill the destination,
+    // so the next client's photos can't land in the previous client's folder
+    const lastKey = type === 'source' ? 'kh_last_source' : 'kh_last_dest'
+    const folderPath = await window.api.selectFolder(type, readPref(lastKey) ?? undefined)
     if (folderPath) {
+      writePref(lastKey, folderPath)
       if (type === 'source') {
         setSourceFolder(folderPath)
         if (destFolder === folderPath) {
@@ -322,7 +354,6 @@ function App(): React.JSX.Element {
     setFileNames('')
     setSourceFolder('')
     setDestFolder('')
-    setDestMode('create')
     setCustomFolderName('')
     setDestCreateError('')
     setPreviewNumbers([])
@@ -367,16 +398,25 @@ function App(): React.JSX.Element {
       ? (progress.bytesDone / progress.bytesTotal) * 100
       : (progress.done / Math.max(progress.total, 1)) * 100
 
-  const stateLabel =
-    job === 'running'
-      ? 'Copying'
-      : job === 'done'
-        ? 'Complete'
-        : job === 'error'
-          ? 'Error'
-          : 'Standby'
-  const stateClass =
-    job === 'running' ? 'running' : job === 'done' ? 'done' : job === 'error' ? 'error' : 'standby'
+  const status = footerStatus({
+    job,
+    outcome: results ? resultOutcome(results) : null,
+    hasSource: sourceDone,
+    isScanning,
+    hasDest: destDone,
+    hasNumbers: previewNumbers.length > 0,
+    fileCount,
+    notEnoughSpace
+  })
+  const statusColor = {
+    waiting: 'var(--color-text-soft)',
+    ready: 'var(--color-success)',
+    running: 'var(--color-warning)',
+    done: 'var(--color-accent)',
+    error: 'var(--color-danger)'
+  }[status.tone]
+
+  const shortcut = window.electron?.process?.platform === 'darwin' ? '⌘↵' : 'Ctrl+Enter'
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -472,7 +512,7 @@ function App(): React.JSX.Element {
               className="text-[11.5px] leading-[1.45]"
               style={{ color: 'var(--color-text-muted)' }}
             >
-              Root directory for photo extraction.
+              The card or folder with the photos.
               <span
                 className="font-mono text-[10px] tracking-[0.06em] ml-1.5"
                 style={{ color: 'var(--color-accent)' }}
@@ -513,7 +553,7 @@ function App(): React.JSX.Element {
                   textAlign: 'left'
                 }}
               >
-                {sourceFolder || 'No folder selected'}
+                {sourceFolder ? ltr(sourceFolder) : 'No folder selected'}
               </div>
               {sourceFolder && (
                 <button
@@ -521,20 +561,7 @@ function App(): React.JSX.Element {
                   disabled={isScanning}
                   aria-label="Rescan source folder"
                   title="Rescan source folder"
-                  className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms]"
-                  style={{
-                    background: 'transparent',
-                    border: '1px solid transparent',
-                    color: 'var(--color-text-muted)'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = 'var(--color-text)'
-                    e.currentTarget.style.background = 'var(--color-surface-2)'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = 'var(--color-text-muted)'
-                    e.currentTarget.style.background = 'transparent'
-                  }}
+                  className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms] btn-ghost"
                 >
                   <RefreshCw size={12} className={isScanning ? 'animate-spin' : undefined} />
                 </button>
@@ -544,20 +571,7 @@ function App(): React.JSX.Element {
                   onClick={() => setSourceFolder('')}
                   aria-label="Clear source folder"
                   title="Clear source folder"
-                  className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms]"
-                  style={{
-                    background: 'transparent',
-                    border: '1px solid transparent',
-                    color: 'var(--color-text-muted)'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = 'var(--color-text)'
-                    e.currentTarget.style.background = 'var(--color-surface-2)'
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = 'var(--color-text-muted)'
-                    e.currentTarget.style.background = 'transparent'
-                  }}
+                  className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms] btn-ghost"
                 >
                   <X size={12} />
                 </button>
@@ -604,7 +618,7 @@ function App(): React.JSX.Element {
               className="text-[11.5px] leading-[1.45]"
               style={{ color: 'var(--color-text-muted)' }}
             >
-              Where the curated photos reside.
+              Where the picked photos will be copied.
               <span
                 className="font-mono text-[10px] tracking-[0.06em] ml-1.5"
                 style={{ color: 'var(--color-accent)' }}
@@ -675,7 +689,7 @@ function App(): React.JSX.Element {
                     className="flex-1 font-mono text-[11.5px] truncate px-0.5"
                     style={{ color: 'var(--color-text-soft)', direction: 'rtl', textAlign: 'left' }}
                   >
-                    ~/Downloads/{customFolderName || 'folder-name'}
+                    {ltr(`~/Downloads/${customFolderName.trim() || 'folder-name'}`)}
                   </div>
                 </div>
                 <input
@@ -757,27 +771,14 @@ function App(): React.JSX.Element {
                       textAlign: 'left'
                     }}
                   >
-                    {destFolder || 'No folder selected'}
+                    {destFolder ? ltr(destFolder) : 'No folder selected'}
                   </div>
                   {destFolder && (
                     <button
                       onClick={() => setDestFolder('')}
                       aria-label="Clear destination folder"
                       title="Clear destination folder"
-                      className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms]"
-                      style={{
-                        background: 'transparent',
-                        border: '1px solid transparent',
-                        color: 'var(--color-text-muted)'
-                      }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.color = 'var(--color-text)'
-                        e.currentTarget.style.background = 'var(--color-surface-2)'
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.color = 'var(--color-text-muted)'
-                        e.currentTarget.style.background = 'transparent'
-                      }}
+                      className="inline-flex items-center justify-center h-[26px] px-2 rounded-md text-[11.5px] transition-all duration-[120ms] btn-ghost"
                     >
                       <X size={12} />
                     </button>
@@ -841,9 +842,9 @@ function App(): React.JSX.Element {
               className="text-[11.5px] leading-[1.45]"
               style={{ color: 'var(--color-text-muted)' }}
             >
-              Identifiers like{' '}
+              Paste numbers or file names, e.g.{' '}
               <span className="font-mono" style={{ color: 'var(--color-text-muted)' }}>
-                KYN3185, DSC_0012, 3185
+                3185, DSC_0012, IMG_1234.JPG
               </span>
               .
               <span
@@ -1028,15 +1029,8 @@ function App(): React.JSX.Element {
           <span
             className="w-1.5 h-1.5 rounded-full"
             style={{
-              background:
-                stateClass === 'standby'
-                  ? 'var(--color-success)'
-                  : stateClass === 'running'
-                    ? 'var(--color-warning)'
-                    : stateClass === 'done'
-                      ? 'var(--color-accent)'
-                      : 'var(--color-danger)',
-              animation: stateClass === 'running' ? 'pulse-dot 1.1s infinite' : 'none'
+              background: statusColor,
+              animation: status.tone === 'running' ? 'pulse-dot 1.1s infinite' : 'none'
             }}
           />
           <b
@@ -1046,7 +1040,7 @@ function App(): React.JSX.Element {
               fontSize: '12.5px'
             }}
           >
-            {stateLabel}
+            {status.label}
           </b>
           {results && !showModal && job !== 'running' && (
             <button
@@ -1093,22 +1087,7 @@ function App(): React.JSX.Element {
         <div className="flex items-center gap-1.5">
           <button
             onClick={toggleTheme}
-            className="w-[26px] h-[26px] grid place-items-center rounded-md cursor-pointer transition-all duration-[120ms]"
-            style={{
-              background: 'transparent',
-              border: '1px solid transparent',
-              color: 'var(--color-text-muted)'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'var(--color-text)'
-              e.currentTarget.style.background = 'var(--color-surface)'
-              e.currentTarget.style.borderColor = 'var(--color-border)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'var(--color-text-muted)'
-              e.currentTarget.style.background = 'transparent'
-              e.currentTarget.style.borderColor = 'transparent'
-            }}
+            className="w-[26px] h-[26px] grid place-items-center rounded-md cursor-pointer transition-all duration-[120ms] btn-ghost"
             aria-label="Toggle theme"
           >
             {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
@@ -1136,9 +1115,12 @@ function App(): React.JSX.Element {
             </button>
           )}
           <button
+            ref={startButtonRef}
             onClick={handleCopyFiles}
             disabled={!isReady}
-            title={notEnoughSpace ? 'Not enough space on the destination' : undefined}
+            title={
+              notEnoughSpace ? 'Not enough space on the destination' : `Start copy (${shortcut})`
+            }
             className="relative inline-flex items-center gap-2 overflow-hidden transition-all duration-[120ms]"
             style={{
               height: '30px',
@@ -1193,6 +1175,7 @@ function App(): React.JSX.Element {
 
       {conflict && (
         <ConflictDialog
+          returnFocusTo={startButtonRef}
           existing={conflict.existing}
           total={filesToCopy.length}
           folderName={conflict.dest.split(/[\\/]/).pop() || conflict.dest}
@@ -1204,6 +1187,7 @@ function App(): React.JSX.Element {
 
       {showModal && results && (
         <ResultsModal
+          returnFocusTo={startButtonRef}
           results={results}
           elapsed={elapsed}
           destFolder={lastDest}

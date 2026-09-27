@@ -5,7 +5,8 @@ import type { ConflictPolicy, CopyProgress } from '../shared/types'
 
 // Custom APIs for renderer
 const api = {
-  selectFolder: (type: 'source' | 'destination') => ipcRenderer.invoke('select-folder', type),
+  selectFolder: (type: 'source' | 'destination', defaultPath?: string) =>
+    ipcRenderer.invoke('select-folder', type, defaultPath),
   getSourceFiles: (sourceFolder: string) => ipcRenderer.invoke('get-source-files', sourceFolder),
   readClipboard: () => ipcRenderer.invoke('clipboard-read'),
   writeClipboard: (text: string) => ipcRenderer.invoke('clipboard-write', text),

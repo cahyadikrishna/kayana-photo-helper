@@ -12,7 +12,7 @@ declare global {
   interface Window {
     electron: ElectronAPI
     api: {
-      selectFolder: (type: 'source' | 'destination') => Promise<string | null>
+      selectFolder: (type: 'source' | 'destination', defaultPath?: string) => Promise<string | null>
       getSourceFiles: (sourceFolder: string) => Promise<SourceFile[]>
       readClipboard: () => Promise<string>
       writeClipboard: (text: string) => Promise<void>

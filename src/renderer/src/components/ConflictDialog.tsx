@@ -1,7 +1,10 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { AlertCircle } from 'lucide-react'
 
 interface ConflictDialogProps {
+  // Where keyboard focus goes when the dialog closes
+  returnFocusTo?: RefObject<HTMLElement | null>
   existing: string[]
   total: number
   folderName: string
@@ -14,6 +17,7 @@ const PREVIEW_COUNT = 4
 
 // Asked once before copying when some files are already in the destination.
 export function ConflictDialog({
+  returnFocusTo,
   existing,
   total,
   folderName,
@@ -21,7 +25,9 @@ export function ConflictDialog({
   onReplace,
   onCancel
 }: ConflictDialogProps): React.JSX.Element {
+  const dialogRef = useRef<HTMLDivElement>(null)
   const skipRef = useRef<HTMLButtonElement>(null)
+  useFocusTrap(dialogRef, returnFocusTo)
   useEffect(() => skipRef.current?.focus(), [])
 
   const shown = existing.slice(0, PREVIEW_COUNT).join(', ')
@@ -34,6 +40,7 @@ export function ConflictDialog({
       onClick={onCancel}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="conflict-title"

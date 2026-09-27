@@ -8,7 +8,8 @@ A simple Electron app that helps photographers and editors filter and copy speci
 - **Flexible Input**: Works with full filenames OR just numbers (e.g., "3185" finds "WED_3185.JPG")
 - **Live Preview**: See parsed numbers and matching files in real-time as you type
 - **Smart Destinations**: Auto-create folders in Downloads OR select any existing folder
-- **Multi-format Support**: Copies all matching files (RAW + JPG of same shot)
+- **Format choice**: RAW only (default), JPG only, or Both per shot — falls back to whatever exists if the preferred format is missing. Supports ARW, CR2, CR3, NEF, NRW, DNG, RAF, ORF, PEF, RW2, SRW, JPG, HEIC, PNG, TIFF
+- **Safe copy**: never overwrites — files already in the destination are skipped and reported
 - **Detailed Results**: See which files were successfully copied, which weren't found, and which failed
 
 ## How to Use
@@ -36,7 +37,8 @@ A simple Electron app that helps photographers and editors filter and copy speci
 6. **Review Results**: The app will show you:
    - ✅ Successfully copied files (with input → matched file mapping)
    - ❌ Numbers that weren't found in the source folder
-   - ⚠️ Files that failed to copy (permission issues, etc.)
+   - ⏭️ Files skipped because they already exist in the destination
+- ⚠️ Files that failed to copy (permission issues, etc.)
 
 ## Development
 

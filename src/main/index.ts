@@ -1,8 +1,10 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage } from 'electron'
 import { join } from 'path'
-import { promises as fs } from 'fs'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import type { FormatPreference } from '../shared/matching'
+import type { CopyResults, CreateDestFolderResult } from '../shared/types'
+import { copyMatchedFiles, createDestFolder, listSourceFiles } from './copy'
 
 // Must be set at module level (before app.whenReady) for macOS dock tooltip to work
 app.setName('Kayana Photo Helper')
@@ -90,28 +92,7 @@ app.whenReady().then(() => {
   // Handle getting files from source folder
   ipcMain.handle('get-source-files', async (_, sourceFolder: string) => {
     try {
-      const files = await fs.readdir(sourceFolder)
-      // Filter for common image formats
-      const imageExtensions = [
-        '.jpg',
-        '.jpeg',
-        '.png',
-        '.tiff',
-        '.tif',
-        '.raw',
-        '.cr2',
-        '.nef',
-        '.arw',
-        '.dng',
-        '.orf',
-        '.pef',
-        '.rw2'
-      ]
-      const imageFiles = files.filter((file) => {
-        const ext = file.toLowerCase().substring(file.lastIndexOf('.'))
-        return imageExtensions.includes(ext)
-      })
-      return imageFiles
+      return await listSourceFiles(sourceFolder)
     } catch (error) {
       console.error('Error reading source folder:', error)
       return []
@@ -119,153 +100,22 @@ app.whenReady().then(() => {
   })
 
   // Handle creating destination folder in Downloads
-  ipcMain.handle('create-dest-folder', async (_, folderName: string) => {
-    try {
-      const downloadsPath = join(homedir(), 'Downloads')
-      const destPath = join(downloadsPath, folderName)
+  ipcMain.handle(
+    'create-dest-folder',
+    (_, folderName: string): Promise<CreateDestFolderResult> =>
+      createDestFolder(join(homedir(), 'Downloads'), folderName)
+  )
 
-      // Create the folder if it doesn't exist
-      await fs.mkdir(destPath, { recursive: true })
-
-      return destPath
-    } catch (error) {
-      console.error('Error creating destination folder:', error)
-      throw error
-    }
-  })
-
-  // Handle file copying with fuzzy matching
+  // Handle file copying
   ipcMain.handle(
     'copy-files',
-    async (_, sourceFolder: string, destFolder: string, inputNumbers: string[]) => {
-      const results = {
-        success: [] as { input: string; matched: string }[],
-        failed: [] as { input: string; matched: string; error: string }[],
-        notFound: [] as string[]
-      }
-
-      // Get all files from source folder
-      const sourceFiles = await fs.readdir(sourceFolder)
-
-      // Define file extensions with priority (RAW formats first)
-      const rawExtensions = ['.arw', '.cr2', '.nef', '.dng', '.orf', '.pef', '.rw2', '.raw', '.raf']
-      const jpegExtensions = ['.jpg', '.jpeg']
-      const otherExtensions = ['.png', '.tiff', '.tif']
-      const allExtensions = [...rawExtensions, ...jpegExtensions, ...otherExtensions]
-
-      const imageFiles = sourceFiles.filter((file) => {
-        const ext = file.toLowerCase().substring(file.lastIndexOf('.'))
-        return allExtensions.includes(ext)
-      })
-
-      // Helper function to get base filename (without extension)
-      const getBaseName = (filename: string): string => {
-        return filename.substring(0, filename.lastIndexOf('.'))
-      }
-
-      // Helper function to check if file is RAW format
-      const isRawFile = (filename: string): boolean => {
-        const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'))
-        return rawExtensions.includes(ext)
-      }
-
-      // Helper function to prioritize RAW files when both RAW and JPG exist
-      const prioritizeRawFiles = (matchingFiles: string[]): string[] => {
-        const grouped = new Map<string, string[]>()
-
-        // Group files by base name (filename without extension)
-        for (const file of matchingFiles) {
-          const baseName = getBaseName(file)
-          if (!grouped.has(baseName)) {
-            grouped.set(baseName, [])
-          }
-          grouped.get(baseName)!.push(file)
-        }
-
-        const prioritizedFiles: string[] = []
-
-        // For each group, prefer RAW over JPG
-        for (const [, files] of grouped) {
-          const rawFiles = files.filter(isRawFile)
-          const jpegFiles = files.filter((file) => {
-            const ext = file.toLowerCase().substring(file.lastIndexOf('.'))
-            return jpegExtensions.includes(ext)
-          })
-          const otherFiles = files.filter((file) => {
-            const ext = file.toLowerCase().substring(file.lastIndexOf('.'))
-            return otherExtensions.includes(ext)
-          })
-
-          // Priority: RAW > Other formats > JPEG (only if no RAW available)
-          if (rawFiles.length > 0) {
-            prioritizedFiles.push(...rawFiles)
-          } else if (otherFiles.length > 0) {
-            prioritizedFiles.push(...otherFiles)
-          } else {
-            prioritizedFiles.push(...jpegFiles)
-          }
-        }
-
-        return prioritizedFiles
-      }
-
-      // Normalize identifier: strip separators between letter prefix and digits
-      const normalizeId = (s: string): string => s.toUpperCase().replace(/[-_]/g, '')
-
-      const matchFileToIdentifier = (file: string, identifier: string): boolean => {
-        if (/^\d+$/.test(identifier)) {
-          const inputNum = parseInt(identifier, 10)
-          const baseName = file.substring(0, file.lastIndexOf('.'))
-          const trailingMatch = baseName.match(/(\d+)$/)
-          return trailingMatch ? parseInt(trailingMatch[1], 10) === inputNum : false
-        } else {
-          const normIdent = normalizeId(identifier)
-          const fileBase = normalizeId(file.substring(0, file.lastIndexOf('.')))
-          return fileBase === normIdent
-        }
-      }
-
-      for (const inputNumber of inputNumbers) {
-        try {
-          const matchingFiles = imageFiles.filter((file) =>
-            matchFileToIdentifier(file, inputNumber)
-          )
-
-          if (matchingFiles.length === 0) {
-            results.notFound.push(inputNumber)
-            continue
-          }
-
-          // Apply RAW file prioritization
-          const prioritizedFiles = prioritizeRawFiles(matchingFiles)
-
-          // Copy prioritized files
-          for (const matchedFile of prioritizedFiles) {
-            const sourcePath = join(sourceFolder, matchedFile)
-            const destPath = join(destFolder, matchedFile)
-
-            await fs.copyFile(sourcePath, destPath)
-            results.success.push({ input: inputNumber, matched: matchedFile })
-          }
-        } catch (error) {
-          console.error(`Failed to copy files for ${inputNumber}:`, error)
-          const matchingFiles = imageFiles.filter((file) =>
-            matchFileToIdentifier(file, inputNumber)
-          )
-
-          if (matchingFiles.length > 0) {
-            const prioritizedFiles = prioritizeRawFiles(matchingFiles)
-            results.failed.push({
-              input: inputNumber,
-              matched: prioritizedFiles.join(', '),
-              error: error instanceof Error ? error.message : 'Unknown error'
-            })
-          }
-        }
-      }
-
-      return results
-    }
+    (
+      _,
+      sourceFolder: string,
+      destFolder: string,
+      identifiers: string[],
+      preference: FormatPreference
+    ): Promise<CopyResults> => copyMatchedFiles(sourceFolder, destFolder, identifiers, preference)
   )
 
   createWindow()

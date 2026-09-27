@@ -8,16 +8,19 @@ export type FormatPreference = 'raw' | 'jpg' | 'both'
 export const RAW_EXTENSIONS = [
   '.arw',
   '.cr2',
+  '.cr3',
   '.nef',
+  '.nrw',
   '.dng',
   '.orf',
   '.pef',
   '.rw2',
   '.raw',
-  '.raf'
+  '.raf',
+  '.srw'
 ]
 export const JPEG_EXTENSIONS = ['.jpg', '.jpeg']
-export const OTHER_EXTENSIONS = ['.png', '.tiff', '.tif']
+export const OTHER_EXTENSIONS = ['.png', '.tiff', '.tif', '.heic', '.heif']
 export const IMAGE_EXTENSIONS = [...RAW_EXTENSIONS, ...JPEG_EXTENSIONS, ...OTHER_EXTENSIONS]
 
 export interface MatchResult {
@@ -41,40 +44,61 @@ export const isRawFile = (filename: string): boolean =>
 export const isJpegFile = (filename: string): boolean =>
   JPEG_EXTENSIONS.includes(getExtension(filename))
 
+// Dotfiles are never photos; this also skips macOS AppleDouble companions
+// (._DSC0001.ARW) that appear on exFAT/FAT32 SD cards.
 export const isImageFile = (filename: string): boolean =>
-  IMAGE_EXTENSIONS.includes(getExtension(filename))
+  !filename.startsWith('.') && IMAGE_EXTENSIONS.includes(getExtension(filename))
+
+// "1. 5504" / "1) 5504" — requires whitespace so "3185.JPG" is left alone
+const LIST_NUMBERING = /^\d+[.)]\s+/
+const BULLET = /^[-•*]\s*/
+const IMAGE_EXTENSION_SUFFIX = new RegExp(
+  `\\.(${IMAGE_EXTENSIONS.map((e) => e.slice(1)).join('|')})\\b`,
+  'gi'
+)
+// OS duplicate-copy suffix, e.g. "IMG_1234 (1).jpg"
+const DUPLICATE_SUFFIX = /(?<=[A-Za-z0-9])\s*\(\d{1,3}\)/g
+const TOKEN = /[A-Za-z]+[-_]?\d+|\d+/g
+
+// Pure numbers are compared by value, so "0012" and "12" are the same identifier.
+const dedupeKey = (id: string): string => (/^\d+$/.test(id) ? id.replace(/^0+(?=\d)/, '') : id)
 
 export function parseIdentifiers(input: string): {
   identifiers: string[]
   duplicates: Map<string, number>
 } {
-  const counts = new Map<string, number>()
+  // dedupe key -> first spelling seen + count
+  const seen = new Map<string, { identifier: string; count: number }>()
+  const add = (identifier: string): void => {
+    const key = dedupeKey(identifier)
+    const entry = seen.get(key)
+    if (entry) entry.count++
+    else seen.set(key, { identifier, count: 1 })
+  }
 
   for (const line of input.split('\n')) {
-    let cleanLine = line.trim()
-    if (!cleanLine) continue
-    cleanLine = cleanLine.replace(/^\d+\.\s*/, '')
-    cleanLine = cleanLine.replace(/^[-•*]\s*/, '')
-    cleanLine = cleanLine.trim()
+    const cleanLine = line
+      .trim()
+      .replace(LIST_NUMBERING, '')
+      .replace(BULLET, '')
+      .replace(IMAGE_EXTENSION_SUFFIX, '')
+      .replace(DUPLICATE_SUFFIX, '')
+      .trim()
     if (!cleanLine) continue
 
-    const matches = cleanLine.match(/[A-Za-z]{2,6}[-_]?\d+|\d+/g)
-    if (matches) {
-      for (const m of matches) {
-        const key = m.toUpperCase().replace(/([A-Z]{2,6})[-_](\d)/g, '$1$2')
-        counts.set(key, (counts.get(key) || 0) + 1)
-      }
+    const tokens = cleanLine.match(TOKEN)
+    if (tokens) {
+      for (const token of tokens) add(token.toUpperCase().replace(/^([A-Z]+)[-_](\d)/, '$1$2'))
     } else {
-      const key = cleanLine.toUpperCase()
-      counts.set(key, (counts.get(key) || 0) + 1)
+      add(cleanLine.toUpperCase())
     }
   }
 
   const identifiers: string[] = []
   const duplicates = new Map<string, number>()
-  for (const [key, count] of counts) {
-    identifiers.push(key)
-    if (count > 1) duplicates.set(key, count)
+  for (const { identifier, count } of seen.values()) {
+    identifiers.push(identifier)
+    if (count > 1) duplicates.set(identifier, count)
   }
   return { identifiers, duplicates }
 }

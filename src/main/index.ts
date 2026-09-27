@@ -3,12 +3,21 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { FormatPreference } from '../shared/matching'
-import type { CopyResults, CreateDestFolderResult } from '../shared/types'
-import { copyMatchedFiles, createDestFolder, getFreeSpace, listSourceFiles } from './copy'
+import type { ConflictPolicy, CopyResults, CreateDestFolderResult } from '../shared/types'
+import {
+  copyMatchedFiles,
+  createDestFolder,
+  describeDownloadsFolder,
+  findExistingFiles,
+  getFreeSpace,
+  listSourceFiles
+} from './copy'
 import { setupAutoUpdates } from './updater'
 
 // Copies in progress, so an update restart never interrupts one
 let runningCopies = 0
+// The copy job in progress, so the renderer can cancel it
+let activeCopy: AbortController | null = null
 
 // Must be set at module level (before app.whenReady) for macOS dock tooltip to work
 app.setName('Kayana Photo Helper')
@@ -123,19 +132,44 @@ app.whenReady().then(() => {
   // Handle file copying
   ipcMain.handle(
     'copy-files',
-    (
-      _,
+    async (
+      event,
       sourceFolder: string,
       destFolder: string,
       identifiers: string[],
-      preference: FormatPreference
+      preference: FormatPreference,
+      conflict: ConflictPolicy
     ): Promise<CopyResults> => {
+      const controller = new AbortController()
+      activeCopy = controller
       runningCopies++
-      return copyMatchedFiles(sourceFolder, destFolder, identifiers, preference).finally(() => {
+      try {
+        return await copyMatchedFiles(sourceFolder, destFolder, identifiers, preference, {
+          conflict,
+          signal: controller.signal,
+          onProgress: (progress) => event.sender.send('copy-progress', progress)
+        })
+      } finally {
         runningCopies--
-      })
+        if (activeCopy === controller) activeCopy = null
+      }
     }
   )
+
+  // Stops the running copy after the current file
+  ipcMain.handle('cancel-copy', () => activeCopy?.abort())
+
+  ipcMain.handle('find-existing-files', (_, destFolder: string, files: string[]) =>
+    findExistingFiles(destFolder, files)
+  )
+
+  // For the "folder already exists" hint in Create-new mode
+  ipcMain.handle('describe-downloads-folder', (_, folderName: string) =>
+    describeDownloadsFolder(join(homedir(), 'Downloads'), folderName)
+  )
+
+  // Show the destination in Finder / Explorer; returns an error message or ''
+  ipcMain.handle('open-folder', (_, folder: string) => shell.openPath(folder))
 
   createWindow()
 

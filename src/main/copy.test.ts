@@ -2,7 +2,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { promises as fs } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { copyMatchedFiles, createDestFolder, listSourceFiles, validateFolderName } from './copy'
+import {
+  copyMatchedFiles,
+  createDestFolder,
+  getFreeSpace,
+  listSourceFiles,
+  validateFolderName
+} from './copy'
 
 let root: string
 let src: string
@@ -28,11 +34,23 @@ afterEach(async () => {
 })
 
 describe('listSourceFiles', () => {
-  it('returns only regular image files', async () => {
-    await touch(src, 'DSC0001.ARW')
+  it('returns only regular image files, with their sizes', async () => {
+    await touch(src, 'DSC0001.ARW', 'x'.repeat(1234))
     await touch(src, 'notes.txt')
     await fs.mkdir(join(src, 'DSC0002.JPG'))
-    expect(await listSourceFiles(src)).toEqual(['DSC0001.ARW'])
+    expect(await listSourceFiles(src)).toEqual([{ name: 'DSC0001.ARW', size: 1234 }])
+  })
+})
+
+describe('getFreeSpace', () => {
+  it('returns free bytes for an existing folder', async () => {
+    const free = await getFreeSpace(dest)
+    expect(free).toBeGreaterThan(0)
+  })
+
+  it('uses the nearest existing parent for a folder not created yet', async () => {
+    const free = await getFreeSpace(join(dest, 'not-yet', 'deeper'))
+    expect(free).toBeGreaterThan(0)
   })
 })
 

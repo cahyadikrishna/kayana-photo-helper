@@ -1,10 +1,10 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage, clipboard } from 'electron'
 import { join } from 'path'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import type { FormatPreference } from '../shared/matching'
 import type { CopyResults, CreateDestFolderResult } from '../shared/types'
-import { copyMatchedFiles, createDestFolder, listSourceFiles } from './copy'
+import { copyMatchedFiles, createDestFolder, getFreeSpace, listSourceFiles } from './copy'
 
 // Must be set at module level (before app.whenReady) for macOS dock tooltip to work
 app.setName('Kayana Photo Helper')
@@ -98,6 +98,16 @@ app.whenReady().then(() => {
       return []
     }
   })
+
+  // Clipboard via the main process: navigator.clipboard in the renderer can
+  // silently fail when the window isn't focused.
+  ipcMain.handle('clipboard-read', () => clipboard.readText())
+  ipcMain.handle('clipboard-write', (_, text: string) => clipboard.writeText(text))
+
+  // Free space on the destination volume; no path means the Downloads folder
+  ipcMain.handle('get-free-space', (_, target: string | null) =>
+    getFreeSpace(target || join(homedir(), 'Downloads'))
+  )
 
   // Handle creating destination folder in Downloads
   ipcMain.handle(

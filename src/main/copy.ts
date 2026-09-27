@@ -2,7 +2,7 @@
 import { constants, promises as fs } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { isImageFile, matchIdentifiers, type FormatPreference } from '../shared/matching'
-import type { CopyResults, CreateDestFolderResult } from '../shared/types'
+import type { CopyResults, CreateDestFolderResult, SourceFile } from '../shared/types'
 
 const ILLEGAL_CHARS_MESSAGE = 'Folder name can\'t contain / \\ : * ? " < > |'
 
@@ -26,11 +26,33 @@ function describeFsError(error: unknown): string {
   }
 }
 
-// Regular image files in the folder (not recursive). Directories named like
-// images, e.g. "DSC0001.JPG/", are ignored.
-export async function listSourceFiles(sourceFolder: string): Promise<string[]> {
+// Regular image files in the folder (not recursive), with sizes. Directories
+// named like images, e.g. "DSC0001.JPG/", are ignored.
+export async function listSourceFiles(sourceFolder: string): Promise<SourceFile[]> {
   const entries = await fs.readdir(sourceFolder, { withFileTypes: true })
-  return entries.filter((e) => e.isFile() && isImageFile(e.name)).map((e) => e.name)
+  const images = entries.filter((e) => e.isFile() && isImageFile(e.name))
+  return Promise.all(
+    images.map(async (e) => ({
+      name: e.name,
+      size: (await fs.stat(join(sourceFolder, e.name))).size
+    }))
+  )
+}
+
+// Free bytes on the volume holding `target`. The folder may not exist yet
+// (e.g. a new Downloads subfolder), so the nearest existing parent is used.
+export async function getFreeSpace(target: string): Promise<number | null> {
+  let dir = resolve(target)
+  for (;;) {
+    try {
+      const stats = await fs.statfs(dir)
+      return stats.bavail * stats.bsize
+    } catch (error) {
+      const parent = dirname(dir)
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT' || parent === dir) return null
+      dir = parent
+    }
+  }
 }
 
 export async function copyMatchedFiles(
@@ -40,7 +62,7 @@ export async function copyMatchedFiles(
   preference: FormatPreference
 ): Promise<CopyResults> {
   const results: CopyResults = { success: [], failed: [], skipped: [], notFound: [] }
-  const sourceFiles = await listSourceFiles(sourceFolder)
+  const sourceFiles = (await listSourceFiles(sourceFolder)).map((f) => f.name)
 
   for (const { identifier, files } of matchIdentifiers(sourceFiles, identifiers, preference)) {
     if (files.length === 0) {

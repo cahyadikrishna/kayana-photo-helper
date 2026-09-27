@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { promises as fs } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -19,6 +19,20 @@ let dest: string
 const touch = (dir: string, name: string, content = name): Promise<void> =>
   fs.writeFile(join(dir, name), content)
 
+// Makes every copy of `name` fail with EACCES. chmod can't make a file
+// unreadable on Windows, so the failure is injected instead.
+const failCopiesOf = (name: string): void => {
+  const copyFile = fs.copyFile.bind(fs)
+  vi.spyOn(fs, 'copyFile').mockImplementation(async (from, to, mode) => {
+    if (String(from).endsWith(name)) {
+      throw Object.assign(new Error(`EACCES: permission denied, copyfile '${from}'`), {
+        code: 'EACCES'
+      })
+    }
+    return copyFile(from, to, mode)
+  })
+}
+
 beforeEach(async () => {
   root = await fs.mkdtemp(join(tmpdir(), 'kayana-copy-'))
   src = join(root, 'src')
@@ -28,10 +42,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  // Restore permissions changed by tests so cleanup can delete everything
-  for (const name of await fs.readdir(src)) {
-    await fs.chmod(join(src, name), 0o644).catch(() => {})
-  }
+  vi.restoreAllMocks()
   await fs.rm(root, { recursive: true, force: true })
 })
 
@@ -82,7 +93,7 @@ describe('copyMatchedFiles', () => {
   it('puts each file in exactly one bucket when one of two files fails', async () => {
     await touch(src, 'DSC0001.ARW')
     await touch(src, 'DSC0001.JPG')
-    await fs.chmod(join(src, 'DSC0001.JPG'), 0o000)
+    failCopiesOf('DSC0001.JPG')
     const results = await copyMatchedFiles(src, dest, ['1'], 'both')
     expect(results.success).toEqual([{ input: '1', matched: 'DSC0001.ARW' }])
     expect(results.failed).toHaveLength(1)
@@ -112,7 +123,7 @@ describe('copyMatchedFiles options', () => {
 
   it('keeps the original when a replace fails', async () => {
     await touch(src, 'DSC3185.ARW', 'new')
-    await fs.chmod(join(src, 'DSC3185.ARW'), 0o000)
+    failCopiesOf('DSC3185.ARW')
     await touch(dest, 'DSC3185.ARW', 'original')
     const results = await copyMatchedFiles(src, dest, ['3185'], 'raw', { conflict: 'replace' })
     expect(results.failed).toHaveLength(1)

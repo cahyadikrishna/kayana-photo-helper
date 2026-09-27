@@ -1,5 +1,10 @@
 // IPC contract shared by main, preload and renderer.
 
+export interface SourceFile {
+  name: string
+  size: number
+}
+
 export interface CopyResults {
   success: { input: string; matched: string }[]
   failed: { input: string; matched: string; error: string }[]

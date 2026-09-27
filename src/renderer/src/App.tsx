@@ -12,10 +12,13 @@ import {
   AlertCircle,
   Check,
   Loader2,
-  RefreshCw
+  RefreshCw,
+  Copy
 } from 'lucide-react'
 import { matchIdentifiers, parseIdentifiers, type FormatPreference } from '../../shared/matching'
-import type { CopyResults } from '../../shared/types'
+import { buildPreview, formatBytes, missingListText } from '../../shared/preview'
+import { MatchList } from './components/MatchList'
+import type { CopyResults, SourceFile } from '../../shared/types'
 
 type JobStatus = 'idle' | 'running' | 'done' | 'error'
 
@@ -38,7 +41,7 @@ const loadFormatPreference = (): FormatPreference => {
 function App(): React.JSX.Element {
   const [fileNames, setFileNames] = useState('')
   const [sourceFolder, setSourceFolder] = useState('')
-  const [sourceFiles, setSourceFiles] = useState<string[]>([])
+  const [sourceFiles, setSourceFiles] = useState<SourceFile[]>([])
   const [isScanning, setIsScanning] = useState(false)
   const [destFolder, setDestFolder] = useState('')
   const [destMode, setDestMode] = useState<'create' | 'select'>('create')
@@ -50,6 +53,8 @@ function App(): React.JSX.Element {
   const [results, setResults] = useState<CopyResults | null>(null)
   const [destPathError, setDestPathError] = useState('')
   const [clipboardError, setClipboardError] = useState('')
+  const [missingCopied, setMissingCopied] = useState(false)
+  const [freeSpace, setFreeSpace] = useState<number | null>(null)
   const [duplicateInputs, setDuplicateInputs] = useState<Map<string, number>>(new Map())
   const [job, setJob] = useState<JobStatus>('idle')
   const [progress, setProgress] = useState(0)
@@ -60,6 +65,7 @@ function App(): React.JSX.Element {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const copyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const clipboardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const missingCopiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // Incremented on every scan request; responses from older scans are ignored.
   const scanIdRef = useRef(0)
 
@@ -112,20 +118,37 @@ function App(): React.JSX.Element {
     scanSource(sourceFolder)
   }, [sourceFolder, scanSource])
 
-  const matchResults = useMemo(
-    () =>
-      sourceFolder && previewNumbers.length > 0
-        ? matchIdentifiers(sourceFiles, previewNumbers, formatPreference).map((r) => ({
-            identifier: r.identifier,
-            matchedFiles: r.files
-          }))
-        : [],
-    [sourceFolder, sourceFiles, previewNumbers, formatPreference]
-  )
-  const matchedFiles = useMemo(
-    () => [...new Set(matchResults.flatMap((r) => r.matchedFiles))],
-    [matchResults]
-  )
+  // What will be copied, per identifier, with real sizes. Null until a source is chosen.
+  const preview = useMemo(() => {
+    if (!sourceFolder || previewNumbers.length === 0) return null
+    const names = sourceFiles.map((f) => f.name)
+    const sizes = new Map(sourceFiles.map((f) => [f.name, f.size]))
+    return buildPreview(
+      matchIdentifiers(names, previewNumbers, formatPreference),
+      sizes,
+      duplicateInputs
+    )
+  }, [sourceFolder, sourceFiles, previewNumbers, formatPreference, duplicateInputs])
+  const fileCount = preview?.fileCount ?? 0
+
+  // Free space on the destination volume (Downloads in Create-new mode).
+  // Re-checked after each job, since a copy uses up space.
+  useEffect(() => {
+    if (destMode === 'select' && !destFolder) {
+      setFreeSpace(null)
+      return
+    }
+    let cancelled = false
+    window.api
+      .getFreeSpace(destMode === 'create' ? null : destFolder)
+      .then((bytes) => !cancelled && setFreeSpace(bytes))
+      .catch(() => !cancelled && setFreeSpace(null))
+    return () => {
+      cancelled = true
+    }
+  }, [destMode, destFolder, job])
+
+  const notEnoughSpace = !!preview && freeSpace !== null && preview.totalBytes > freeSpace
 
   const changeFormatPreference = (next: FormatPreference): void => {
     setFormatPreference(next)
@@ -142,9 +165,21 @@ function App(): React.JSX.Element {
     clipboardTimerRef.current = setTimeout(() => setClipboardError(''), 4000)
   }
 
+  const copyMissingList = async (missingIds: string[]): Promise<void> => {
+    try {
+      await window.api.writeClipboard(missingListText(missingIds))
+      setMissingCopied(true)
+      if (missingCopiedTimerRef.current) clearTimeout(missingCopiedTimerRef.current)
+      missingCopiedTimerRef.current = setTimeout(() => setMissingCopied(false), 2000)
+    } catch {
+      setClipboardError("Couldn't copy to clipboard — try again")
+    }
+  }
+
   useEffect(
     () => () => {
       if (clipboardTimerRef.current) clearTimeout(clipboardTimerRef.current)
+      if (missingCopiedTimerRef.current) clearTimeout(missingCopiedTimerRef.current)
     },
     []
   )
@@ -254,14 +289,15 @@ function App(): React.JSX.Element {
   // Derived state
   const sourceDone = !!sourceFolder
   const destDone = destMode === 'create' ? !!customFolderName.trim() : !!destFolder
-  const framesDone = previewNumbers.length > 0 && matchedFiles.length > 0
+  const framesDone = previewNumbers.length > 0 && fileCount > 0
   const isReady =
-    sourceDone && destDone && framesDone && !isScanning && !isProcessing && job !== 'running'
-
-  const unmatchedIds = matchResults
-    .filter((r) => r.matchedFiles.length === 0)
-    .map((r) => r.identifier)
-  const overMatchedResults = matchResults.filter((r) => r.matchedFiles.length > 1)
+    sourceDone &&
+    destDone &&
+    framesDone &&
+    !notEnoughSpace &&
+    !isScanning &&
+    !isProcessing &&
+    job !== 'running'
 
   const stateLabel =
     job === 'running'
@@ -353,7 +389,7 @@ function App(): React.JSX.Element {
         <div
           className="grid animate-fadeUp"
           style={{
-            gridTemplateColumns: '180px 1fr',
+            gridTemplateColumns: '180px minmax(0, 1fr)',
             gap: `${Math.round(18 * scale)}px`,
             padding: `${paddingY} 0`,
             borderBottom: '1px solid var(--color-border)',
@@ -485,7 +521,7 @@ function App(): React.JSX.Element {
         <div
           className="grid animate-fadeUp"
           style={{
-            gridTemplateColumns: '180px 1fr',
+            gridTemplateColumns: '180px minmax(0, 1fr)',
             gap: `${Math.round(18 * scale)}px`,
             padding: `${paddingY} 0`,
             borderBottom: '1px solid var(--color-border)',
@@ -708,7 +744,7 @@ function App(): React.JSX.Element {
         <div
           className="grid animate-fadeUp"
           style={{
-            gridTemplateColumns: '180px 1fr',
+            gridTemplateColumns: '180px minmax(0, 1fr)',
             gap: `${Math.round(18 * scale)}px`,
             padding: `${paddingY} 0`,
             borderBottom: '1px solid var(--color-border)',
@@ -828,7 +864,7 @@ function App(): React.JSX.Element {
                 <button
                   onClick={async () => {
                     try {
-                      const text = await navigator.clipboard.readText()
+                      const text = await window.api.readClipboard()
                       setClipboardError('')
                       setFileNames((prev) => (prev + (prev ? '\n' : '') + text).trim())
                     } catch {
@@ -866,32 +902,9 @@ function App(): React.JSX.Element {
               </div>
             )}
 
-            {/* Duplicate warning */}
-            {duplicateInputs.size > 0 && (
+            {notEnoughSpace && preview && freeSpace !== null && (
               <div
-                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
-                style={{
-                  background: 'color-mix(in oklab, var(--color-warning) 10%, var(--color-surface))',
-                  border:
-                    '1px solid color-mix(in oklab, var(--color-warning) 30%, var(--color-border))',
-                  color: 'var(--color-warning)'
-                }}
-              >
-                <AlertCircle size={12} />
-                <span>
-                  Duplicates:{' '}
-                  <span className="font-mono" style={{ color: 'var(--color-text)' }}>
-                    {Array.from(duplicateInputs.entries())
-                      .map(([k, v]) => `${k} (${v}×)`)
-                      .join(', ')}
-                  </span>
-                </span>
-              </div>
-            )}
-
-            {/* Unmatched identifiers */}
-            {unmatchedIds.length > 0 && (
-              <div
+                role="alert"
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
                 style={{
                   background: 'color-mix(in oklab, var(--color-danger) 10%, var(--color-surface))',
@@ -902,128 +915,33 @@ function App(): React.JSX.Element {
               >
                 <AlertCircle size={12} />
                 <span>
-                  Not found:{' '}
-                  <span className="font-mono" style={{ color: 'var(--color-text)' }}>
-                    {unmatchedIds.join(', ')}
-                  </span>
+                  Not enough space on destination: needs {formatBytes(preview.totalBytes)},{' '}
+                  {formatBytes(freeSpace)} free
                 </span>
               </div>
             )}
 
-            {/* Over-matched identifiers */}
-            {overMatchedResults.length > 0 && (
-              <div
-                className="flex items-start gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
-                style={{
-                  background: 'color-mix(in oklab, var(--color-warning) 10%, var(--color-surface))',
-                  border:
-                    '1px solid color-mix(in oklab, var(--color-warning) 30%, var(--color-border))',
-                  color: 'var(--color-warning)'
-                }}
-              >
-                <AlertCircle size={12} style={{ marginTop: '1px', flexShrink: 0 }} />
-                <span>
-                  Multiple matches:{' '}
-                  {overMatchedResults.map((r, i) => (
-                    <span key={r.identifier}>
-                      {i > 0 && ', '}
-                      <span className="font-mono" style={{ color: 'var(--color-text)' }}>
-                        {r.identifier}
-                      </span>{' '}
-                      <span style={{ color: 'var(--color-warning)' }}>
-                        ({r.matchedFiles.length} files)
-                      </span>
-                    </span>
-                  ))}
-                </span>
-              </div>
-            )}
-
-            {/* Hint line */}
-            <div
-              className="flex justify-between gap-2.5 font-mono text-[10.5px]"
-              style={{ color: 'var(--color-text-soft)' }}
-            >
-              <span>
-                {previewNumbers.length
-                  ? `${previewNumbers.length} identifier${previewNumbers.length > 1 ? 's' : ''} · ${matchedFiles.length} file${matchedFiles.length !== 1 ? 's' : ''} matched`
-                  : 'Awaiting input'}
-              </span>
-              <span>
-                {matchedFiles.length > 0 ? `≈ ${(matchedFiles.length * 8.2).toFixed(0)} MB` : ''}
-              </span>
-            </div>
-
-            {/* Chips with per-identifier match preview */}
-            {previewNumbers.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                <div className="flex flex-wrap gap-1.5 items-center" style={{ minHeight: '22px' }}>
-                  {matchResults.length > 0
-                    ? matchResults.map((r) => {
-                        const isUnmatched = r.matchedFiles.length === 0
-                        const isOverMatched = r.matchedFiles.length > 1
-                        return (
-                          <span
-                            key={r.identifier}
-                            className="inline-flex items-center gap-1 rounded-full font-mono text-[10.5px]"
-                            title={
-                              r.matchedFiles.length > 0
-                                ? r.matchedFiles.join(', ')
-                                : 'No files matched'
-                            }
-                            style={{
-                              padding: '2.5px 8px',
-                              background: isUnmatched
-                                ? 'color-mix(in oklab, var(--color-danger) 12%, var(--color-surface))'
-                                : isOverMatched
-                                  ? 'color-mix(in oklab, var(--color-warning) 12%, var(--color-surface))'
-                                  : 'var(--color-surface)',
-                              border: `1px solid ${
-                                isUnmatched
-                                  ? 'color-mix(in oklab, var(--color-danger) 35%, var(--color-border))'
-                                  : isOverMatched
-                                    ? 'color-mix(in oklab, var(--color-warning) 35%, var(--color-border))'
-                                    : 'var(--color-border)'
-                              }`,
-                              color: isUnmatched
-                                ? 'var(--color-danger)'
-                                : isOverMatched
-                                  ? 'var(--color-warning)'
-                                  : 'var(--color-text)'
-                            }}
-                          >
-                            {r.identifier}
-                            <span
-                              style={{
-                                fontSize: '9px',
-                                opacity: 0.7,
-                                marginLeft: '2px'
-                              }}
-                            >
-                              {r.matchedFiles.length === 0
-                                ? '×'
-                                : r.matchedFiles.length === 1
-                                  ? r.matchedFiles[0]
-                                  : `${r.matchedFiles.length}×`}
-                            </span>
-                          </span>
-                        )
-                      })
-                    : previewNumbers.map((num) => (
-                        <span
-                          key={num}
-                          className="inline-flex items-center gap-1.5 rounded-full font-mono text-[10.5px]"
-                          style={{
-                            padding: '2.5px 8px',
-                            background: 'var(--color-surface)',
-                            border: '1px solid var(--color-border)',
-                            color: 'var(--color-text)'
-                          }}
-                        >
-                          {num}
-                        </span>
-                      ))}
-                </div>
+            {/* Match list: one row per identifier, problems first */}
+            {preview ? (
+              <MatchList
+                rows={preview.rows}
+                summary={[
+                  `${preview.total} number${preview.total !== 1 ? 's' : ''}`,
+                  `${preview.found} found`,
+                  preview.missing > 0 ? `${preview.missing} not found` : '',
+                  preview.multiple > 0 ? `${preview.multiple} multiple` : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+                missingIds={preview.missingIds}
+                missingCopied={missingCopied}
+                onCopyMissing={() => copyMissingList(preview.missingIds)}
+              />
+            ) : (
+              <div className="font-mono text-[10.5px]" style={{ color: 'var(--color-text-soft)' }}>
+                {previewNumbers.length === 0
+                  ? 'Awaiting input'
+                  : `${previewNumbers.length} number${previewNumbers.length !== 1 ? 's' : ''} · choose a source folder to see matches`}
               </div>
             )}
           </div>
@@ -1091,7 +1009,7 @@ function App(): React.JSX.Element {
                 fontSize: '12.5px'
               }}
             >
-              {matchedFiles.length || 0}
+              {fileCount}
             </b>
           </span>
         </div>
@@ -1127,6 +1045,7 @@ function App(): React.JSX.Element {
         <button
           onClick={handleCopyFiles}
           disabled={!isReady}
+          title={notEnoughSpace ? 'Not enough space on the destination' : undefined}
           className="relative inline-flex items-center gap-2 overflow-hidden transition-all duration-[120ms]"
           style={{
             height: '30px',
@@ -1162,7 +1081,9 @@ function App(): React.JSX.Element {
             ) : (
               <>
                 <Play size={12} fill="currentColor" />
-                Start copy
+                {preview && fileCount > 0
+                  ? `Copy ${fileCount} file${fileCount !== 1 ? 's' : ''} · ${formatBytes(preview.totalBytes)}`
+                  : 'Start copy'}
               </>
             )}
           </span>
@@ -1363,6 +1284,20 @@ function App(): React.JSX.Element {
             </div>
 
             <div className="flex gap-2 justify-end mt-0.5">
+              {results.notFound.length > 0 && (
+                <button
+                  onClick={() => copyMissingList(results.notFound)}
+                  className="inline-flex items-center gap-1.5 px-3 h-[30px] rounded-md text-[11.5px] font-medium mr-auto transition-all duration-[120ms]"
+                  style={{
+                    background: 'transparent',
+                    color: 'var(--color-text-muted)',
+                    border: '1px solid var(--color-border)'
+                  }}
+                >
+                  {missingCopied ? <Check size={12} /> : <Copy size={12} />}
+                  {missingCopied ? 'Copied' : 'Copy missing list'}
+                </button>
+              )}
               <button
                 onClick={restartJob}
                 className="inline-flex items-center gap-1.5 px-3.5 h-[30px] rounded-md text-[11.5px] font-medium transition-all duration-[120ms]"

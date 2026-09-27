@@ -6,6 +6,9 @@ import type { FormatPreference } from '../shared/matching'
 const api = {
   selectFolder: (type: 'source' | 'destination') => ipcRenderer.invoke('select-folder', type),
   getSourceFiles: (sourceFolder: string) => ipcRenderer.invoke('get-source-files', sourceFolder),
+  readClipboard: () => ipcRenderer.invoke('clipboard-read'),
+  writeClipboard: (text: string) => ipcRenderer.invoke('clipboard-write', text),
+  getFreeSpace: (target: string | null) => ipcRenderer.invoke('get-free-space', target),
   createDestFolder: (folderName: string) => ipcRenderer.invoke('create-dest-folder', folderName),
   copyFiles: (
     sourceFolder: string,

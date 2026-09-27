@@ -25,6 +25,8 @@ app.setName('Kayana Photo Helper')
 // Use a raster icon (PNG) placed in project's resources so main process can load it in dev and production
 const iconPath = join(__dirname, '../../resources/icon.png')
 const appIcon = nativeImage.createFromPath(iconPath)
+// macOS variant follows Apple's icon grid (rounded tile with margin); used for the dock
+const macIconPath = join(__dirname, '../../resources/icon-mac.png')
 
 function createWindow(): void {
   // Create the browser window.
@@ -79,7 +81,7 @@ app.whenReady().then(() => {
   // Set dock icon on macOS (works in dev and packaged app)
   if (process.platform === 'darwin') {
     try {
-      app.dock?.setIcon(appIcon)
+      app.dock?.setIcon(nativeImage.createFromPath(macIconPath))
     } catch {
       // ignore in environments where dock is unavailable
     }

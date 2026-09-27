@@ -89,18 +89,23 @@ app.whenReady().then(() => {
   ipcMain.on('ping', () => console.log('Hello from main process!'))
 
   // Handle folder selection
-  ipcMain.handle('select-folder', async (_, type: 'source' | 'destination') => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: `Select ${type} folder`
-    })
+  ipcMain.handle(
+    'select-folder',
+    async (_, type: 'source' | 'destination', defaultPath?: string) => {
+      const result = await dialog.showOpenDialog({
+        properties: ['openDirectory'],
+        title: `Select ${type} folder`,
+        // Where the editor last picked a folder; ignored if it no longer exists
+        defaultPath
+      })
 
-    if (result.canceled) {
-      return null
+      if (result.canceled) {
+        return null
+      }
+
+      return result.filePaths[0]
     }
-
-    return result.filePaths[0]
-  })
+  )
 
   // Handle getting files from source folder
   ipcMain.handle('get-source-files', async (_, sourceFolder: string) => {

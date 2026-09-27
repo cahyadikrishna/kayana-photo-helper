@@ -1,9 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type RefObject } from 'react'
+import { useFocusTrap } from '../lib/useFocusTrap'
 import { AlertCircle, Ban, Check, Copy, FolderOpen, X } from 'lucide-react'
 import { resultHeadline, resultOutcome, type ResultOutcome } from '../../../shared/results'
 import type { CopyResults } from '../../../shared/types'
 
 interface ResultsModalProps {
+  // Where keyboard focus goes when the dialog closes
+  returnFocusTo?: RefObject<HTMLElement | null>
   results: CopyResults
   elapsed: number
   destFolder: string
@@ -64,6 +67,7 @@ function LogGroup({
 }
 
 export function ResultsModal({
+  returnFocusTo,
   results,
   elapsed,
   destFolder,
@@ -77,7 +81,9 @@ export function ResultsModal({
 }: ResultsModalProps): React.JSX.Element {
   const outcome = resultOutcome(results)
   const tone = TONE[outcome]
+  const dialogRef = useRef<HTMLDivElement>(null)
   const doneRef = useRef<HTMLButtonElement>(null)
+  useFocusTrap(dialogRef, returnFocusTo)
   useEffect(() => doneRef.current?.focus(), [])
 
   const summary = results.error
@@ -107,6 +113,7 @@ export function ResultsModal({
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="results-title"

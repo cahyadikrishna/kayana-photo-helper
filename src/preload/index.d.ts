@@ -1,4 +1,6 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
+import type { FormatPreference } from '../shared/matching'
+import type { CopyResults, CreateDestFolderResult } from '../shared/types'
 
 declare global {
   interface Window {
@@ -6,16 +8,13 @@ declare global {
     api: {
       selectFolder: (type: 'source' | 'destination') => Promise<string | null>
       getSourceFiles: (sourceFolder: string) => Promise<string[]>
-      createDestFolder: (folderName: string) => Promise<string>
+      createDestFolder: (folderName: string) => Promise<CreateDestFolderResult>
       copyFiles: (
         sourceFolder: string,
         destFolder: string,
-        inputNumbers: string[]
-      ) => Promise<{
-        success: { input: string; matched: string }[]
-        failed: { input: string; matched: string; error: string }[]
-        notFound: string[]
-      }>
+        identifiers: string[],
+        preference: FormatPreference
+      ) => Promise<CopyResults>
     }
   }
 }

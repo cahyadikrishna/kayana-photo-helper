@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import {
   Folder,
   FolderPlus,
@@ -13,12 +13,8 @@ import {
   Check,
   Loader2
 } from 'lucide-react'
-
-interface CopyResults {
-  success: { input: string; matched: string }[]
-  failed: { input: string; matched: string; error: string }[]
-  notFound: string[]
-}
+import { matchIdentifiers, parseIdentifiers, type FormatPreference } from '../../shared/matching'
+import type { CopyResults } from '../../shared/types'
 
 type JobStatus = 'idle' | 'running' | 'done' | 'error'
 
@@ -28,10 +24,13 @@ function App(): React.JSX.Element {
   const [destFolder, setDestFolder] = useState('')
   const [destMode, setDestMode] = useState<'create' | 'select'>('create')
   const [customFolderName, setCustomFolderName] = useState('')
+  const [formatPreference] = useState<FormatPreference>('raw')
   const [isProcessing, setIsProcessing] = useState(false)
   const [previewNumbers, setPreviewNumbers] = useState<string[]>([])
   const [matchedFiles, setMatchedFiles] = useState<string[]>([])
-  const [matchResults, setMatchResults] = useState<{ identifier: string; matchedFiles: string[] }[]>([])
+  const [matchResults, setMatchResults] = useState<
+    { identifier: string; matchedFiles: string[] }[]
+  >([])
   const [results, setResults] = useState<CopyResults | null>(null)
   const [destPathError, setDestPathError] = useState('')
   const [duplicateInputs, setDuplicateInputs] = useState<Map<string, number>>(new Map())
@@ -62,49 +61,12 @@ function App(): React.JSX.Element {
 
   const scale = 1.35
 
-  // Parser (kept exactly as before)
-  const parsePhotoFilesFromInput = useCallback(
-    (input: string): { identifiers: string[]; duplicates: Map<string, number> } => {
-      const lines = input.split('\n')
-      const counts = new Map<string, number>()
-
-      for (const line of lines) {
-        let cleanLine = line.trim()
-        if (!cleanLine) continue
-        cleanLine = cleanLine.replace(/^\d+\.\s*/, '')
-        cleanLine = cleanLine.replace(/^[-•*]\s*/, '')
-        cleanLine = cleanLine.trim()
-        if (!cleanLine) continue
-
-        const matches = cleanLine.match(/[A-Za-z]{2,6}[-_]?\d+|\d+/g)
-        if (matches) {
-          for (const m of matches) {
-            const key = m.toUpperCase().replace(/([A-Z]{2,6})[-_](\d)/g, '$1$2')
-            counts.set(key, (counts.get(key) || 0) + 1)
-          }
-        } else {
-          const key = cleanLine.toUpperCase()
-          counts.set(key, (counts.get(key) || 0) + 1)
-        }
-      }
-
-      const identifiers: string[] = []
-      const duplicates = new Map<string, number>()
-      for (const [key, count] of counts) {
-        identifiers.push(key)
-        if (count > 1) duplicates.set(key, count)
-      }
-      return { identifiers, duplicates }
-    },
-    []
-  )
-
   // Effects
   useEffect(() => {
-    const { identifiers, duplicates } = parsePhotoFilesFromInput(fileNames)
+    const { identifiers, duplicates } = parseIdentifiers(fileNames)
     setPreviewNumbers(identifiers)
     setDuplicateInputs(duplicates)
-  }, [fileNames, parsePhotoFilesFromInput])
+  }, [fileNames])
 
   useEffect(() => {
     const updateMatchedFiles = async (): Promise<void> => {
@@ -112,85 +74,10 @@ function App(): React.JSX.Element {
         try {
           const sourceFiles = await window.api.getSourceFiles(sourceFolder)
 
-          const rawExtensions = [
-            '.arw',
-            '.cr2',
-            '.nef',
-            '.dng',
-            '.orf',
-            '.pef',
-            '.rw2',
-            '.raw',
-            '.raf'
-          ]
-          const jpegExtensions = ['.jpg', '.jpeg']
-          const otherExtensions = ['.png', '.tiff', '.tif']
-
-          const getBaseName = (filename: string): string =>
-            filename.substring(0, filename.lastIndexOf('.'))
-
-          const isRawFile = (filename: string): boolean => {
-            const ext = filename.toLowerCase().substring(filename.lastIndexOf('.'))
-            return rawExtensions.includes(ext)
-          }
-
-          const prioritizeRawFiles = (matchingFiles: string[]): string[] => {
-            const grouped = new Map<string, string[]>()
-            for (const file of matchingFiles) {
-              const baseName = getBaseName(file)
-              if (!grouped.has(baseName)) grouped.set(baseName, [])
-              grouped.get(baseName)!.push(file)
-            }
-
-            const prioritizedFiles: string[] = []
-            for (const [, files] of grouped) {
-              const rawFiles = files.filter(isRawFile)
-              const jpegFiles = files.filter((file) => {
-                const ext = file.toLowerCase().substring(file.lastIndexOf('.'))
-                return jpegExtensions.includes(ext)
-              })
-              const otherFiles = files.filter((file) => {
-                const ext = file.toLowerCase().substring(file.lastIndexOf('.'))
-                return otherExtensions.includes(ext)
-              })
-
-              if (rawFiles.length > 0) {
-                prioritizedFiles.push(...rawFiles)
-              } else if (otherFiles.length > 0) {
-                prioritizedFiles.push(...otherFiles)
-              } else {
-                prioritizedFiles.push(...jpegFiles)
-              }
-            }
-            return prioritizedFiles
-          }
-
-          const normalize = (s: string): string => s.toUpperCase().replace(/[-_]/g, '')
-
-          const matched: string[] = []
-          const results: { identifier: string; matchedFiles: string[] }[] = []
-          for (const identifier of previewNumbers) {
-            const isPureNumber = /^\d+$/.test(identifier)
-
-            const matchingFiles = sourceFiles.filter((file) => {
-              if (isPureNumber) {
-                const inputNum = parseInt(identifier, 10)
-                const baseName = file.substring(0, file.lastIndexOf('.'))
-                const trailingMatch = baseName.match(/(\d+)$/)
-                return trailingMatch ? parseInt(trailingMatch[1], 10) === inputNum : false
-              } else {
-                const normIdent = normalize(identifier)
-                const fileBase = normalize(file.substring(0, file.lastIndexOf('.')))
-                return fileBase === normIdent
-              }
-            })
-
-            const prioritized = prioritizeRawFiles(matchingFiles)
-            const rawOnly = prioritized.filter(isRawFile)
-            const finalFiles = rawOnly.length > 0 ? rawOnly : prioritized
-            matched.push(...finalFiles)
-            results.push({ identifier, matchedFiles: finalFiles })
-          }
+          const results = matchIdentifiers(sourceFiles, previewNumbers, formatPreference).map(
+            (r) => ({ identifier: r.identifier, matchedFiles: r.files })
+          )
+          const matched = results.flatMap((r) => r.matchedFiles)
 
           setMatchedFiles([...new Set(matched)])
           setMatchResults(results)
@@ -204,7 +91,7 @@ function App(): React.JSX.Element {
     }
 
     updateMatchedFiles()
-  }, [sourceFolder, previewNumbers])
+  }, [sourceFolder, previewNumbers, formatPreference])
 
   const handleSelectFolder = async (type: 'source' | 'destination'): Promise<void> => {
     const folderPath = await window.api.selectFolder(type)
@@ -232,11 +119,12 @@ function App(): React.JSX.Element {
     let finalDestFolder = ''
     if (destMode === 'create') {
       if (!customFolderName.trim()) return
-      try {
-        finalDestFolder = await window.api.createDestFolder(customFolderName.trim())
-      } catch {
+      const created = await window.api.createDestFolder(customFolderName.trim())
+      if (!created.ok) {
+        console.error('Error creating destination folder:', created.error)
         return
       }
+      finalDestFolder = created.path
     } else {
       if (!destFolder) return
       finalDestFolder = destFolder
@@ -248,7 +136,7 @@ function App(): React.JSX.Element {
     setProgress(0)
     const startedAt = Date.now()
 
-    const { identifiers } = parsePhotoFilesFromInput(fileNames)
+    const { identifiers } = parseIdentifiers(fileNames)
 
     // Simulate progress while actual copy happens
     copyTimerRef.current = setInterval(() => {
@@ -256,7 +144,12 @@ function App(): React.JSX.Element {
     }, 180)
 
     try {
-      const copyResults = await window.api.copyFiles(sourceFolder, finalDestFolder, identifiers)
+      const copyResults = await window.api.copyFiles(
+        sourceFolder,
+        finalDestFolder,
+        identifiers,
+        formatPreference
+      )
       if (copyTimerRef.current) clearInterval(copyTimerRef.current)
       setProgress(100)
       setResults(copyResults)
@@ -306,7 +199,9 @@ function App(): React.JSX.Element {
   const framesDone = previewNumbers.length > 0 && matchedFiles.length > 0
   const isReady = sourceDone && destDone && framesDone && !isProcessing && job !== 'running'
 
-  const unmatchedIds = matchResults.filter((r) => r.matchedFiles.length === 0).map((r) => r.identifier)
+  const unmatchedIds = matchResults
+    .filter((r) => r.matchedFiles.length === 0)
+    .map((r) => r.identifier)
   const overMatchedResults = matchResults.filter((r) => r.matchedFiles.length > 1)
 
   const stateLabel =
@@ -821,7 +716,8 @@ function App(): React.JSX.Element {
                 className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
                 style={{
                   background: 'color-mix(in oklab, var(--color-danger) 10%, var(--color-surface))',
-                  border: '1px solid color-mix(in oklab, var(--color-danger) 30%, var(--color-border))',
+                  border:
+                    '1px solid color-mix(in oklab, var(--color-danger) 30%, var(--color-border))',
                   color: 'var(--color-danger)'
                 }}
               >
@@ -841,7 +737,8 @@ function App(): React.JSX.Element {
                 className="flex items-start gap-2 px-2.5 py-1.5 rounded-md text-[11px]"
                 style={{
                   background: 'color-mix(in oklab, var(--color-warning) 10%, var(--color-surface))',
-                  border: '1px solid color-mix(in oklab, var(--color-warning) 30%, var(--color-border))',
+                  border:
+                    '1px solid color-mix(in oklab, var(--color-warning) 30%, var(--color-border))',
                   color: 'var(--color-warning)'
                 }}
               >
@@ -853,9 +750,10 @@ function App(): React.JSX.Element {
                       {i > 0 && ', '}
                       <span className="font-mono" style={{ color: 'var(--color-text)' }}>
                         {r.identifier}
+                      </span>{' '}
+                      <span style={{ color: 'var(--color-warning)' }}>
+                        ({r.matchedFiles.length} files)
                       </span>
-                      {' '}
-                      <span style={{ color: 'var(--color-warning)' }}>({r.matchedFiles.length} files)</span>
                     </span>
                   ))}
                 </span>
@@ -889,7 +787,11 @@ function App(): React.JSX.Element {
                           <span
                             key={r.identifier}
                             className="inline-flex items-center gap-1 rounded-full font-mono text-[10.5px]"
-                            title={r.matchedFiles.length > 0 ? r.matchedFiles.join(', ') : 'No files matched'}
+                            title={
+                              r.matchedFiles.length > 0
+                                ? r.matchedFiles.join(', ')
+                                : 'No files matched'
+                            }
                             style={{
                               padding: '2.5px 8px',
                               background: isUnmatched
@@ -1216,7 +1118,10 @@ function App(): React.JSX.Element {
                   {results.success.map((s, i) => (
                     <span
                       key={i}
-                      style={{ color: 'color-mix(in oklab, var(--color-success) 55%, var(--color-text-soft))' }}
+                      style={{
+                        color:
+                          'color-mix(in oklab, var(--color-success) 55%, var(--color-text-soft))'
+                      }}
                     >
                       {s.input}
                     </span>
@@ -1224,7 +1129,10 @@ function App(): React.JSX.Element {
                   {results.notFound.map((id, i) => (
                     <span
                       key={`nf-${i}`}
-                      style={{ color: 'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))' }}
+                      style={{
+                        color:
+                          'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))'
+                      }}
                     >
                       {id}
                     </span>
@@ -1232,7 +1140,10 @@ function App(): React.JSX.Element {
                   {results.failed.map((f, i) => (
                     <span
                       key={`f-${i}`}
-                      style={{ color: 'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))' }}
+                      style={{
+                        color:
+                          'color-mix(in oklab, var(--color-danger) 55%, var(--color-text-soft))'
+                      }}
                     >
                       {f.input}
                     </span>

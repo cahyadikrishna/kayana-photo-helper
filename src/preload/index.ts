@@ -1,13 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { FormatPreference } from '../shared/matching'
 
 // Custom APIs for renderer
 const api = {
   selectFolder: (type: 'source' | 'destination') => ipcRenderer.invoke('select-folder', type),
   getSourceFiles: (sourceFolder: string) => ipcRenderer.invoke('get-source-files', sourceFolder),
   createDestFolder: (folderName: string) => ipcRenderer.invoke('create-dest-folder', folderName),
-  copyFiles: (sourceFolder: string, destFolder: string, inputNumbers: string[]) =>
-    ipcRenderer.invoke('copy-files', sourceFolder, destFolder, inputNumbers)
+  copyFiles: (
+    sourceFolder: string,
+    destFolder: string,
+    identifiers: string[],
+    preference: FormatPreference
+  ) => ipcRenderer.invoke('copy-files', sourceFolder, destFolder, identifiers, preference)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

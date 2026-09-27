@@ -1,10 +1,10 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, nativeImage } from 'electron'
 import { join } from 'path'
-import { promises as fs } from 'fs'
 import { homedir } from 'os'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
-import { isImageFile, matchIdentifiers, type FormatPreference } from '../shared/matching'
+import type { FormatPreference } from '../shared/matching'
 import type { CopyResults, CreateDestFolderResult } from '../shared/types'
+import { copyMatchedFiles, createDestFolder, listSourceFiles } from './copy'
 
 // Must be set at module level (before app.whenReady) for macOS dock tooltip to work
 app.setName('Kayana Photo Helper')
@@ -92,8 +92,7 @@ app.whenReady().then(() => {
   // Handle getting files from source folder
   ipcMain.handle('get-source-files', async (_, sourceFolder: string) => {
     try {
-      const files = await fs.readdir(sourceFolder)
-      return files.filter(isImageFile)
+      return await listSourceFiles(sourceFolder)
     } catch (error) {
       console.error('Error reading source folder:', error)
       return []
@@ -103,56 +102,20 @@ app.whenReady().then(() => {
   // Handle creating destination folder in Downloads
   ipcMain.handle(
     'create-dest-folder',
-    async (_, folderName: string): Promise<CreateDestFolderResult> => {
-      try {
-        const destPath = join(homedir(), 'Downloads', folderName)
-        await fs.mkdir(destPath, { recursive: true })
-        return { ok: true, path: destPath }
-      } catch (error) {
-        console.error('Error creating destination folder:', error)
-        return {
-          ok: false,
-          error: error instanceof Error ? error.message : 'Could not create folder'
-        }
-      }
-    }
+    (_, folderName: string): Promise<CreateDestFolderResult> =>
+      createDestFolder(join(homedir(), 'Downloads'), folderName)
   )
 
   // Handle file copying
   ipcMain.handle(
     'copy-files',
-    async (
+    (
       _,
       sourceFolder: string,
       destFolder: string,
       identifiers: string[],
       preference: FormatPreference
-    ): Promise<CopyResults> => {
-      const results: CopyResults = { success: [], failed: [], skipped: [], notFound: [] }
-      const sourceFiles = await fs.readdir(sourceFolder)
-
-      for (const { identifier, files } of matchIdentifiers(sourceFiles, identifiers, preference)) {
-        if (files.length === 0) {
-          results.notFound.push(identifier)
-          continue
-        }
-        try {
-          for (const matchedFile of files) {
-            await fs.copyFile(join(sourceFolder, matchedFile), join(destFolder, matchedFile))
-            results.success.push({ input: identifier, matched: matchedFile })
-          }
-        } catch (error) {
-          console.error(`Failed to copy files for ${identifier}:`, error)
-          results.failed.push({
-            input: identifier,
-            matched: files.join(', '),
-            error: error instanceof Error ? error.message : 'Unknown error'
-          })
-        }
-      }
-
-      return results
-    }
+    ): Promise<CopyResults> => copyMatchedFiles(sourceFolder, destFolder, identifiers, preference)
   )
 
   createWindow()
